@@ -19,7 +19,7 @@ const byId = new Map(PLUGINS)
 
 /** 少一个 id 就是导出契约漏了 —— 加载即抛，别让它静默少一个 provider。 */
 for (const id of PROVIDER_IDS) {
-  if (typeof byId.get(id) !== 'function') throw new Error(`magpie-marvis: 缺少 provider 工厂 ${id}`)
+  if (typeof byId.get(id) !== 'function') throw new Error(`magpie-marvis-lane: 缺少 provider 工厂 ${id}`)
 }
 
 /** 本体 `marvis`（magpie id `jet-hub-marvis`，腾讯 Marvis）。 */

@@ -384,7 +384,7 @@ export class JetHubContainer {
     if (this.seam === undefined || this.seam.routes.size === 0) {
       // 走到这里说明本体的 RPC 注册链路变了（版本升级），必须暴露出来而不是静默降级。
       throw new Error(
-        'magpie-marvis: 本体没有注册任何 Jet Hub 管理路由（connection 接缝失效）。' +
+        'magpie-marvis-lane: 本体没有注册任何 Jet Hub 管理路由（connection 接缝失效）。' +
           '请检查 vendor/lib/jet-hub-rpc.js 的 registerJetHubRpc 是否仍在用 ctx.get("connection").fetch.register。',
       )
     }

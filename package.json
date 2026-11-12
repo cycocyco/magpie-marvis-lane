@@ -1,8 +1,9 @@
 {
-  "name": "magpie-marvis",
+  "name": "magpie-marvis-lane",
   "version": "1.0.0",
   "type": "module",
-  "description": "从 magpie-Jet-Hub 摘出的腾讯 Marvis 单供应商 magpie 插件：内嵌 cordis 容器运行本体引擎，复用其账号池、静默续期、浏览器 OAuth 登录与设备指纹模拟；凭据落在插件自持目录，不依赖 DSH 安装；其余 28 家供应商与控制台已全部移除",
+  "description": "从 magpie-Jet-Hub 摘出的腾讯 Marvis 单车道 magpie 插件：内嵌 cordis 容器运行本体引擎，复用其账号池、静默续期、浏览器 OAuth 登录与设备指纹模拟；凭据落在插件自持目录，不依赖 DSH 安装；其余 28 家供应商与控制台已全部移除",
+  "private": true,
   "main": "./index.mjs",
   "exports": {
     ".": "./index.mjs"
@@ -48,7 +49,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/cycocyco/magpie-Jet-Hub.git"
+    "url": "git+https://github.com/cycocyco/magpie-marvis-lane.git"
   },
   "upstream": {
     "name": "dsh-providers-hub",
