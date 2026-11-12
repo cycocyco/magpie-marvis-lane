@@ -34,9 +34,14 @@
  *
  * ## 凭据从哪来
  *
- * 不向用户要任何新凭据：DSH 已经把账号写在 `~/.dsh/.credentials.yaml` 的
- * `refs:` 段里，本插件用 `FileCredentialProvider` 把它桥成容器的 `credentials`
- * 服务。DSH 里登录过的账号，在 magpie 里立刻可用，反之亦然。
+ * 两条路，都不向用户要 API key：
+ *  - **新建账号**：走隔离 Chromium 的浏览器 OAuth（登录页在插件里拉起），
+ *    凭据落进插件自持目录（`~/.config/magpie/jet-hub-marvis/.dsh/`，
+ *    见 `resolveHome`）；
+ *  - **连接已有账号**：把容器账号池里已登录的号免输入接进 magpie（`api` 型）。
+ *
+ * 插件自持落盘、不碰宿主 DSH 的 `~/.dsh`；想和已有 DSH 凭据共享的人显式传
+ * `home` 选项桥接（那是 magpie 网关层该管的事，不是插件的默认行为）。
  */
 
 import { JetHubContainer } from './container.mjs'
@@ -1178,13 +1183,13 @@ function humanizeUsageError(error) {
     return `这个账号在账号池里，但它的登录凭据已经不在了（${text}）—— 到 DSH 或 magpie 里重新登录一次，或者删掉它`
   }
   if (/Cannot read propert(y|ies) of undefined \(reading 'id'\)/.test(text)) {
-    return `这个账号可能没有可用的登录凭据了（${text}）—— 到 DSH 或 magpie 里重新登录一次，或者删掉它`
+    return `这个账号可能没有可用的登录凭据了（${text}）—— 用「新建账号」重新登录一次，或者删掉它`
   }
   if (/^Cannot read propert(y|ies) of/.test(text)) {
     return `该账号的余额查询内部出错（${text}），换个账号或重新登录后重试`
   }
   if (/refresh token/i.test(text)) {
-    return `该账号的登录已过期（${text}），到 DSH 里重新登录一次即可`
+    return `该账号的登录已过期（${text}），用「新建账号」重新登录一次即可`
   }
   return text
 }
@@ -1789,14 +1794,15 @@ export function makePlugin(dshProvider) {
         icon: iconFor(dshProvider),
 
         /**
-         * 免输入签入：凭据早就在 `~/.dsh/.credentials.yaml` 里，容器启动即读到。
+         * 免输入签入：容器账号池里已有的号（浏览器「新建账号」登录进来的），
+         * 一键接进 magpie，不需要再输任何东西。
          * `keyless: true` 是 magpie 自己的字段，GUI/CLI 会跳过 personal-key 输入。
          */
         methods: [
           {
             type: 'api',
             keyless: true,
-            label: `连接本机 DSH 账号（${NAMES[dshProvider] ?? dshProvider}，无需输入）`,
+            label: `连接已有账号（${NAMES[dshProvider] ?? dshProvider}，无需输入）`,
 
             /**
              * 签入前先问「哪一个是你要的账号」。
@@ -1823,7 +1829,7 @@ export function makePlugin(dshProvider) {
               return {
                 type: 'select',
                 key: ACCOUNT_INPUT,
-                message: `选一个要接进 magpie 的 ${dshProvider} 账号（DSH 里共 ${rows.length} 个）`,
+                message: `选一个要接进 magpie 的 ${dshProvider} 账号（共 ${rows.length} 个）`,
                 options: rows.map((a) => {
                   // 凭据丢了的账号**照样列出来**（用户可能就想看到它），但必须标明白：
                   // 签进来的会是一个查不到额度、请求也走不通的空壳。
@@ -1832,9 +1838,9 @@ export function makePlugin(dshProvider) {
                     label: alive ? accountLabel(a) : `${accountLabel(a)}（无登录凭据）`,
                     value: String(a?.id ?? ''),
                     hint: !alive
-                      ? '这个账号在账号池里，但它的凭据已经不在凭据文件里了 —— 签进来查不到额度、请求也走不通。建议改用「新建账号」重新登一次，或把它从 DSH 里删掉'
+                      ? '这个账号在账号池里，但它的凭据已经不在凭据文件里了 —— 签进来查不到额度、请求也走不通。建议改用「新建账号」重新登一次，或删掉这个失效账号'
                       : a?.enabled === false
-                        ? '在 DSH 里已停用，接进来后请求会 502'
+                        ? '该账号已停用，接进来后请求会 502'
                         : undefined,
                   }
                 }),
@@ -1888,7 +1894,7 @@ export function makePlugin(dshProvider) {
               //    就是这个意思。
               if (!catalogTimedOut && n === 0 && wide === 0) {
                 throw new Error(
-                  `本体里的 ${dshProvider} 没有可用模型：确认这个账号在 DSH 里已登录，或先在 /v1/models 里看它是否有模型`,
+                  `本体里的 ${dshProvider} 没有可用模型：确认这个账号已在插件里登录成功，或先在 /v1/models 里看它是否有模型`,
                 )
               }
 
@@ -1906,7 +1912,7 @@ export function makePlugin(dshProvider) {
               const hit = picked === '' ? undefined : await accountById(container, dshProvider, picked, log)
               if (picked !== '' && hit === undefined) {
                 throw new Error(
-                  `你选的账号 ${picked} 已经不在 ${dshProvider} 的账号池里了（可能刚在 DSH 里被删除，或那次列账号没成功）。`
+                  `你选的账号 ${picked} 已经不在 ${dshProvider} 的账号池里了（可能刚被删除，或那次列账号没成功）。`
                   + `请重新点「连接」，在弹出的列表里重新选一个。`,
                 )
               }
@@ -1916,7 +1922,7 @@ export function makePlugin(dshProvider) {
               if (hit !== undefined && !credentialAliveOf(container, hit.credentialRef)) {
                 throw new Error(
                   `你选的账号 ${picked} 在账号池里，但它的登录凭据已不可用了（凭据文件里没有这条、或者它的值是空的）——`
-                  + ` 到 DSH 里重新登录这个账号，或者改用「新建账号」重新登一次。`,
+                  + ` 删掉它，用「新建账号」重新登录一次。`,
                 )
               }
 

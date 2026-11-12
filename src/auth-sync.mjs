@@ -107,7 +107,7 @@ export function planAuthRecords(accounts, { providers, idOf, skipProviders }) {
     if (mine.length === 0) {
       // 本体里没有这个渠道的账号：仍写一条占位记录，否则 magpie 报
       // `no plugin signs in to <id>`，卡片点不动。
-      const why = '（本机 DSH 未登录该渠道）'
+      const why = '（尚未登录该渠道，点「连接」或「新建账号」）'
       next[magpieId] = {
         type: 'api',
         key: `jet-hub-local:${dsh}`,
