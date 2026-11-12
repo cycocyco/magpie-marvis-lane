@@ -22,23 +22,13 @@
  * @module src/marvis-auth.ts
  */
 import { readFileSync } from 'node:fs';
-import { appendFileSync } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { Service } from '@deepseek-ai/cordis';
 import { credentialRef } from '@deepseek-ai/dsh-credentials';
 import { shouldRefreshNow } from './expiry-sync.js';
 import { newMarvisDeviceGuid } from './marvis-device.js';
 import { createChromiumMarvisLogin, } from './marvis-browser-login.js';
-/** 🩺 诊断（2026-11-12 登录卡住事故）：`ctx.logger.warn` 不落盘，先写文件定位。 */
-function dbg(message) {
-    try {
-        appendFileSync(join(tmpdir(), 'marvis-login-dbg.log'), `${new Date().toISOString()} [auth] ${message}\n`);
-    }
-    catch {
-        // 诊断写不进去不能影响登录
-    }
-}
 import { MARVIS } from './marvis-product.js';
 import { MARVIS_BROWSER_UA, MARVIS_REDIRECT_URI, businessHeaders, credentialExpiresAtMs, marvisAccountOf, marvisLanguageOf, parseMarvisCredential, } from './marvis.js';
 /** 凭据库的最小接口（与宿主 `ctx.credentials` 同形，值恒为字符串）。 */
@@ -259,27 +249,19 @@ export class MarvisAuth extends Service {
         if (params.state !== undefined && params.state !== '')
             search.set('state', params.state);
         const url = `${MARVIS_REDIRECT_URI}?${search.toString()}`;
-        dbg(`exchange 开始（login_type=${language}，code 长度 ${String(params.code ?? '').length}）`);
-        let response;
-        try {
-            response = await this.fetchImpl(url, {
-                method: 'GET',
-                redirect: 'manual',
-                headers: {
-                    Accept: '*/*',
-                    'User-Agent': MARVIS_BROWSER_UA,
-                    'Ual-Access-Guid': params.guid,
-                },
-                signal: AbortSignal.timeout(30_000),
-            });
-        }
-        catch (error) {
-            dbg(`exchange 请求失败：${error instanceof Error ? `${error.name} ${error.message}` : String(error)}`);
-            throw error;
-        }
-        dbg(`exchange 响应：HTTP ${String(response.status)}`);
+        // ⚠️ 必须带超时：无上限的 fetch 一旦挂住，`login.poll` 的占位条目就永远
+        //    等不到终态，界面卡在「请在浏览器中完成登录」（2026-11-12 事故的放大器）。
+        const response = await this.fetchImpl(url, {
+            method: 'GET',
+            redirect: 'manual',
+            headers: {
+                Accept: '*/*',
+                'User-Agent': MARVIS_BROWSER_UA,
+                'Ual-Access-Guid': params.guid,
+            },
+            signal: AbortSignal.timeout(30_000),
+        });
         const cookies = parseMarvisCookies(response.headers);
-        dbg(`exchange cookies 键：${Object.keys(cookies).join(',') || '(空)'}`);
         const accessToken = cookies['accesstoken'];
         if (accessToken !== undefined && accessToken !== '') {
             const openid = cookies['openid'] ?? '';
@@ -400,9 +382,7 @@ export class MarvisAuth extends Service {
             if (code === null || code === '')
                 return undefined;
             const credential = await this.exchangeCode({ code, loginType, guid, state });
-            dbg(`凭据已兑换（openid 长度 ${String(credential.openid ?? '').length}），开始取资料`);
             const profile = await this.fetchUserProfile(credential);
-            dbg('资料已取到，返回凭据');
             /**
              * ⚠️ 昵称兜底（2026-11-09 审计）：资料接口失败 / 上游没给 `nick_name` 时退到
              * **openid 前 8 位**，而不是留空。留空的净后果是多个 QQ 账号在面板里**全叫

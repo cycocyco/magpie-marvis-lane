@@ -25,24 +25,9 @@
  * @module src/marvis-browser-login.ts
  */
 import { isAbsolute } from 'node:path';
-import { appendFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { BrowserDeploymentError, ChromiumSession, browserCandidates, browserNotFoundMessage, findBrowserExecutable, sleep as defaultSleep, } from './chromium-session.js';
 import { MARVIS } from './marvis-product.js';
 import { MARVIS_QQ_APP_ID, MARVIS_REDIRECT_URI, MARVIS_WX_APP_ID, } from './marvis.js';
-/**
- * 🩺 诊断（2026-11-12 登录卡住事故）：magpie 的 `ctx.logger.warn` 不落盘，
- * 浏览器登录关键步骤全部看不见。临时把关键事件写到文件里，定位完应删掉。
- */
-function dbg(message) {
-    try {
-        appendFileSync(join(tmpdir(), 'marvis-login-dbg.log'), `${new Date().toISOString()} ${message}\n`);
-    }
-    catch {
-        // 诊断写不进去不能影响登录
-    }
-}
 /** 回调路径（**唯一**被 Marvis 注册的 redirect_uri 路径，改不了）。 */
 const CALLBACK_PATH = 'marvis_client_login/marvis_oauth';
 /** 等待用户完成登录的上限（毫秒）：与 magicrew / monkeycode 同档。 */
@@ -156,16 +141,12 @@ class ChromiumMarvisLogin {
         const url = typeof params.request?.url === 'string' ? params.request.url : undefined;
         if (requestId === undefined || url === undefined)
             return;
-        // 🩺 诊断：只记 marvis 自身的 URL，避免刷屏（2026-11-12 登录卡住事故）
-        if (url.includes('marvis'))
-            dbg(`paused: ${url.slice(0, 200)}`);
         try {
             if (!isMarvisCallbackUrl(url)) {
                 await this.session.cdp?.send('Fetch.continueRequest', { requestId }, CDP_TIMEOUT_MS);
                 return;
             }
             this.captured = url;
-            dbg(`捕获回调（code 未被消费）：${url.slice(0, 200)}`);
             await this.session.cdp?.send('Fetch.fulfillRequest', {
                 requestId,
                 responseCode: 200,
@@ -174,9 +155,8 @@ class ChromiumMarvisLogin {
             }, CDP_TIMEOUT_MS);
             this.log?.('[marvis] 已截停授权回调，code 未被消费');
         }
-        catch (error) {
+        catch {
             // 浏览器已关 / 请求已失效：等待侧会因 exited 提前返回。
-            dbg(`处理 paused 请求失败：${error instanceof Error ? error.message : String(error)}`);
         }
     }
     close() {
@@ -208,13 +188,12 @@ class ChromiumMarvisLogin {
                 return this.captured;
             // ⚠️ 用户自己关了窗口 = 明确放弃，不必等满超时。
             if (this.session.exited) {
-                dbg('wait 结束：浏览器窗口已关闭（未截获回调）');
+                this.log?.('[marvis] 浏览器窗口已关闭，停止等待登录');
                 return undefined;
             }
             await this.sleep(this.pollIntervalMs);
             waited += this.pollIntervalMs;
         }
-        dbg(`wait 结束：超时 ${timeout}ms，未截获 marvis_oauth 请求`);
         return undefined;
     }
 }
@@ -249,8 +228,6 @@ export async function createChromiumMarvisLogin(deps) {
         ?? ((options) => new ChromiumSession(options)))(sessionOptions);
     try {
         await session.start();
-        /** 　　🩺 诊断（2026-11-12）：CDP 没挂上就等于永远截不到回调，必须留痕。 */
-        dbg(`浏览器已启动：${executable}；CDP ${session.cdp === undefined ? '未连接(!)' : '已连接'}`);
         /**
          * ⚠️ **如实说明**（2026-11-09 评审 M3）：注释写「必须在导航之前」是不成立的
          * —— `ChromiumSession` 把 `initialUrl` 当**命令行参数**传给 chromium
@@ -262,7 +239,6 @@ export async function createChromiumMarvisLogin(deps) {
          *    再导航」，否则回调可能在 enable 之前就发出（`code` 被浏览器消费掉）。
          */
         await session.cdp?.send('Fetch.enable', { patterns: [{ urlPattern: '*marvis_oauth*', requestStage: 'Request' }] }, CDP_TIMEOUT_MS);
-        dbg('Fetch.enable 已下发（*marvis_oauth*）');
     }
     catch (error) {
         session.dispose();
