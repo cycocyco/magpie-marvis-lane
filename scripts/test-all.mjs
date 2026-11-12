@@ -33,24 +33,18 @@ const cfgEnv = {
   JET_HUB_MODELS_CACHE: path.join(cfgSandbox, 'jet-hub-models.json'),
 }
 
-const UNIT = ['t-writerefs.mjs', 't-cred-upsert.mjs', 't-deps.mjs', 't-dead-account.mjs', 't-account-pin.mjs', 't-account-cache.mjs', 't-cred-alive.mjs', 't-usage.mjs', 't-checkin.mjs', 't-options.mjs', 't-attachments.mjs', 't-plugin.mjs', 't-models-nowait.mjs', 't-seed-auth.mjs', 't-auth-sync.mjs', 't-import-backup.mjs', 't-backup-keep.mjs', 't-login-reclaim.mjs', 't-console-backup.mjs', 't-console-credits.mjs', 't-new-account.mjs', 't-key-account.mjs', 't-magicrew-creds.mjs', 't-magicrew-modes.mjs', 't-snapshot-segment.mjs', 't-model-efforts.mjs', 't-model-prices.mjs', 't-rpc-cover.mjs', 't-vendor-patches.mjs', 't-console-strict-order.mjs', 't-page-contract.mjs', 't-error-shape.mjs', 't-hub-cors.mjs', 't-spawn-stdio.mjs']
+const UNIT = ['t-writerefs.mjs', 't-cred-upsert.mjs', 't-deps.mjs', 't-dead-account.mjs', 't-account-pin.mjs', 't-account-cache.mjs', 't-cred-alive.mjs', 't-usage.mjs', 't-checkin.mjs', 't-options.mjs', 't-attachments.mjs', 't-plugin.mjs', 't-models-nowait.mjs', 't-seed-auth.mjs', 't-auth-sync.mjs', 't-backup-keep.mjs', 't-new-account.mjs', 't-model-efforts.mjs', 't-model-prices.mjs', 't-rpc-cover.mjs', 't-error-shape.mjs', 't-spawn-stdio.mjs']
 const ENV = [
-  { file: 't-console.mjs', cmd: process.execPath, label: '控制台（真容器，~40s）' },
   // 直连层回归：真起容器跑一次 chat（流式 + 非流式）。取代了原来「内嵌网关端口」
   // 那条断言 —— 现在没有端口了，契约变成「进程内直连仍出得出内容」。
   { file: 't-direct.mjs', cmd: process.execPath, label: '直连链路（真容器 + 真 chat，~40s）' },
-  { file: 't-gateway.py', cmd: process.env.PYTHON || 'python', label: '网关（需 magpie 3425）' },
-  { file: 'ui-check.cjs', cmd: process.execPath, label: '页面 UI（需 web 3456）' },
 ]
 
 const all = process.argv.includes('--all')
-// `--all` 不只是「多加几条测试」：对 t-rpc-cover 还意味着打开探活。
-// t-rpc-cover 自己认 `--all` 这个参数来开探活，但它只收到自己的文件路径，
-// 收不到本脚本的命令行 —— 所以必须在这里显式补 `--probe`。
-// 踩过的坑（2026-10-28）：本文件注释写着「--all 会补 --probe」，代码却没补，
-// 于是 `test-all.mjs --all` 里那条最关键的「78 个方法真发请求都不回 unknown」
-// 从来没跑过，探活那条一直是空跑。注释和代码对不上就是缺陷。
-const extraArgs = (f) => (all && f === 't-rpc-cover.mjs' ? ['--probe'] : [])
+// `--all` 只是「多跑 ENV 组」（t-direct 真起容器 + 真 chat，会碰真实账号）。
+// （原版还会给 t-rpc-cover 补 `--probe` 做控制台探活；控制台已随裁剪删除，
+//   探活与那条参数一并移除，t-rpc-cover 现在是纯静态解析，毫秒级。）
+const extraArgs = () => []
 const cases = all
   ? [...UNIT.map((f) => ({ file: f, cmd: process.execPath, label: f, args: extraArgs(f) })), ...ENV]
   : UNIT.map((f) => ({ file: f, cmd: process.execPath, label: f, args: [] }))
@@ -60,12 +54,7 @@ const cases = all
 // 于是 `--all` 报「11 通过 / 1 失败」—— 但当时 3456 活着（curl 给 401 而非拒连），
 // 唯一的问题是这台 shell 没设 key。判据工具把「没条件测」说成「失败」是假的信号，
 // 会逼人去查产品代码。key 本身**不能**写进仓库（这台机器的凭据），只能外部注入。
-const PRECONDITION = (c) => {
-  if (c.file === 'ui-check.cjs' && !process.env.MAGPIE_WEB_KEY) {
-    return '跳过（缺 MAGPIE_WEB_KEY，web 登录 key 不入仓库；3456 是否在跑需另验）'
-  }
-  return null
-}
+const PRECONDITION = (c) => null
 
 let pass = 0
 let fail = 0

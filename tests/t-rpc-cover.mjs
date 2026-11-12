@@ -1,82 +1,30 @@
-// 本体 RPC 方法总数 / 控制台覆盖率的口径锁定测试。
+// 本体 RPC 方法总数的口径锁定测试（本 fork 裁剪版）。
 //
-// 为什么要有这个测试：README 曾写「控制台覆盖 62 / 65」，但几个数彼此对不上，
-// 因为不同人数的方法不一样，靠人工 grep 数：
-//   - 只数小写首段 → 61（漏了 nativeSearch.* / panelEntry.* 这 4 个驼峰首段）
-//   - 数关键字面量 → 69（多出 claimed / inactive / failed / already-claimed 这四条
-//     非 RPC 的枚举 case）
-//   - 控制台里 `grep rpc('...')` → 62（account.retestAll / account.resetAll 是
-//     当字符串常量传给 accBulk() 的，字面量正则数不到）
-//   - 只解析主 `switch (method)` → 65 —— **仍然偏低**：还有一类方法根本不走主
-//     switch，而是在它之前被 `handleMethod()` 按前缀改道接管（见下）。
+// 背景：原版还要对账「控制台覆盖率」，但控制台（console/）已随 28 家供应商
+// 一并裁剪删除，那几个段落（rpc() 调用点解析、DELEGATED/DROPPED 表、
+// REKEY_CHANNELS 对账、探活）随之失去被测对象，整段移除。
 //
-// 所以本测试有**三个**来源，都从源码解析。解析链本身不硬编码方法名（遍历源码按
-// 结构提取），但有几处是**有意**写死的，各自的自守强度不一样：
-//   - 第 3 节的总数常量 `EXPECTED_RPC_METHOD_COUNT` —— 涨落都会报红；
-//   - 三处点名断言：`baizhi.startSession`、`credits.permanentLock`、`loomy.permanentLock`；
-//   - DELEGATED + DROPPED 的具名交接表 —— 有两条反向锚点自守（`:495` 必须全存在、
-//     `:514` 必须全未接）；
-//   - `METHOD_SHAPE` 与 `SIDE_EFFECTS`（9 条会真的写盘 / 发上游请求的方法清单）；
-//   - 「前缀改道的 9 家」前缀数组 —— 这条**没有**反向锚点：它只能抓「列了不存在的前缀」
-//     或前缀拼错，抓不到「真前缀漏列」（实测删到 5 项、或只删 `'baizhi.'` 仍然全绿）。
-//     上游新增第 10 家前缀改道时，必须手动把它补进这个数组。
-//   A) 主 `switch (method)` 块里的 `case '<x>.<y>'` 标签；
-//   B) `handleMethod()` 里每个 `method.startsWith('<prefix>.')` → 对应的
-//      `handle*Rpc` 处理器所在文件里的 `case '<prefix>.<名字>'`
-//      （处理器里也可能写裸名 `case '<名字>'`，按它服务的每个前缀各展开一份）；
-//   C) `handleMethod()` 里的**单方法改道** `if (method === '<x>.<y>')` —— 既不走主
-//      switch、也不带前缀，B 扫不到（当前唯一一个：`baizhi.startSession`）。
-// 三者并集才是「本体实际可调度的方法」全集；第 3 节另有总数锚点，上游加减方法时要同步。
+// 现在只锁两件事：
+//   ① 「本体实际可调度的方法」全集与总数锚点 —— 三条解析链都从源码提取：
+//      A) 主 `switch (method)` 块里的 `case '<x>.<y>'` 标签；
+//      B) `handleMethod()` 里的前缀改道 / 单方法改道（裁剪后为 0，解析器保留：
+//         上游同步带回前缀改道时这里自动重新计数，不用改测试）。
+//   ② 裁剪事实的反向锚点：captcha.*、sendSms/submitSms、loomy.permanentLock
+//      等 28 家专属方法**必须不在**方法面里 —— 多留一个就说明裁剪不干净。
 //
-// ⚠️ 量 B 时**不能**只读 jet-hub-rpc.js：这些分支只写 `method.startsWith('opencode.')`，
-// 方法名在各自的 handler 文件里。而且前缀和文件名**不是**一一对应 —— `minimaxintl.`
-// 的 handler 也在 `minimax-rpc.js` 里，**`vendor/lib/minimaxintl-rpc.js` 根本不存在**。
-// 实测（2026-10-28，项目经理独立复算时踩到）：按前缀推文件名会算出「全集 76、
-// 控制台接 74」—— 推出来的文件读不到，minimaxintl 的 setProxy/testProxy 直接消失。
+// 另外「未知方法回错」这条契约也钉住：主 switch 的 `default:` 必须回
+// `unknown method: <method>`（原探活断言的静态等价物）。
 //
-// ⇒ **别从前缀推文件名，按 import 映射找**。这里从 jet-hub-rpc.js:198 那句
-//    `import { handleMinimaxIntlRpc } from './minimax-rpc.js'` 反查真实文件名，
-//    再把改道分支（:3430 `if (method.startsWith('minimaxintl.'))`、:3431 调
-//    `handleMinimaxIntlRpc`）和处理器对上。
-//
-// 另加一条**可调用性**断言：对每个方法真发一次空 payload，断言回包不含
-// `unknown method:` —— 这条能防住「case 标签存在但根本没接进调度」的错觉。
-// 有副作用的方法（account.create 会真的建占位账号）走白名单排除 + 事后清理断言。
-//
-// 运行方式的取舍（探活默认**关**）：
-//   node tests/t-rpc-cover.mjs                 只做静态推断与覆盖率断言（毫秒级）
-//   node tests/t-rpc-cover.mjs --probe         额外探活（需要活的 magpie 控制台）
-//   JET_HUB_PROBE=1 node tests/t-rpc-cover.mjs 同上（env 形式）
-//   node tests/t-rpc-cover.mjs --no-probe      强制关（env JET_HUB_PROBE=0 同义）
-//   scripts/test-all.mjs --all                 会给本测试补 --probe（与 --all 语义对齐）
-// 为什么默认关：探活是 N 次网络往返，串行跑 5 分钟零输出（2026-10-28 实测被
-// 控制台 job_kill），在 CI 里等于挂住。开着时每请求单独超时，失败计入
-// 「探活失败」并判红，而不是把进程挂在那里。
-//
-// ⚠️ 探活的两阶段（2026-10-28 的教训）：阶段一并发扫描，只断言「没有 unknown
-// method」「没有请求异常」；副作用归因放到阶段二，只在阶段一真的探测到内容变化
-// 时才启动，且**串行、逐方法、两次独立命中才坐实**。最初让并发扫描顺便做前后
-// 整体比对，结果把 aggregate.clearRejected、credits.permanentLock 这两个空载荷下
-// 内容一字未变的只读方法误判成「真写用户状态」（_tmp-diff-attr.mjs 复核实测：
-// 三次调用前后指纹 0116a85d2638|0a963f18dd28|263d00e235ee 始终不变）。
-//
-// 还有一个口径：**本测试只认「解析得到字面量」的方法名**（详见第 4 节开头）。
+// vendor 本地补丁的锚点（原第 8 节）保留：docs/vendor.md 的同步流程是整片覆盖
+// vendor/，补丁被覆盖时会**静默**失效，必须钉成断言。
 //
 // 退出码即结论。
 import fs from 'node:fs'
 import path from 'node:path'
-import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const RPC_JS = path.join(ROOT, 'vendor', 'lib', 'jet-hub-rpc.js')
-const CONSOLE_JS = path.join(ROOT, 'console', 'console.js')
-const CONSOLE_FILES = ['console/console.js', 'console/index.html'].map((f) => path.join(ROOT, f))
-
-const ARGV = process.argv.slice(2)
-const PROBE = ARGV.includes('--no-probe') || process.env.JET_HUB_PROBE === '0'
-  ? false
-  : ARGV.includes('--probe') || ARGV.includes('--all') || process.env.JET_HUB_PROBE === '1'
 
 let failed = 0
 const ok = (cond, msg) => {
@@ -85,14 +33,10 @@ const ok = (cond, msg) => {
 }
 const read = (p) => fs.readFileSync(p, 'utf8')
 const linesOf = (p) => read(p).split(/\r?\n/)
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 // ---- 0) 解析器自检：正则拼装的转义必须是对的 --------------------------------
-// 2026-10-28 踩过的坑：模板串里写 `\s`，JS 字符串字面量先把未知转义当字面字符
-// 消费掉（`\s` → `s`），拼出的正则是 `(?:const|let|var)s+cfgs*=s*(.+)$`，
-// 永远匹配不到 `const cfg = …`。表现是「实参解析不出」「覆盖率突然变差」，
-// 看起来像产品代码退步，实际是测试自己坏了。这里把它钉成断言：
-// 坏掉时第一时间在这里响，而不是在几十行之后的统计数字上响。
+// 模板串里写 `\s`，JS 字符串字面量先把未知转义当字面字符消费掉（`\s` → `s`），
+// 拼出的正则永远匹配不到 `const cfg = …`。钉成断言，坏掉时第一时间在这里响。
 {
   const B = '\\' // 一个反斜杠
   const sample = 'const cfg = PROXY_CHANNELS[provider]'
@@ -112,10 +56,11 @@ const switchLine = rpcLines.findIndex((l) => /switch\s*\(\s*method\s*\)/.test(l)
 ok(switchLine >= 0, `找到主 switch (method)（第 ${switchLine + 1} 行）`)
 
 const mainCases = []
+let sawDefault = false
 for (let i = switchLine + 1; i < rpcLines.length; i++) {
   const m = rpcLines[i].match(/^(\s*)case '([A-Za-z][A-Za-z0-9_-]*\.[A-Za-z][A-Za-z0-9_-]*)'\s*:/)
   if (m) mainCases.push({ line: i + 1, method: m[2], hasBody: rpcLines[i].slice(m[0].length).trim() !== '' })
-  if (/^\s{8,}default\s*:/.test(rpcLines[i])) break
+  if (/^\s{8,}default\s*:/.test(rpcLines[i])) { sawDefault = true; break }
 }
 ok(mainCases.length === new Set(mainCases.map((c) => c.method)).size,
   `主 switch 里 case 标签无重复（${mainCases.length} 个标签 / ${new Set(mainCases.map((c) => c.method)).size} 个唯一）`)
@@ -123,17 +68,22 @@ ok(mainCases.length === new Set(mainCases.map((c) => c.method)).size,
 // 别名/老端点：标签后不跟 { 的是 fall-through，与下一个 case 共享实现体。
 const fallThrough = mainCases.filter((c) => !c.hasBody).map((c) => c.method)
 console.log(`  A) 主 switch 方法数: ${new Set(mainCases.map((c) => c.method)).size}`)
+console.log(`  其中共享实现体的标签: ${fallThrough.length ? fallThrough.join(', ') : '无'}`)
+
+// 「未知方法回错」契约（原探活断言的静态等价物）：`default:` 必须存在且回
+// `unknown method: <method>` —— case 标签存在但调度没接进去时，探活就是靠这条兜住的。
+ok(sawDefault, '主 switch 有 default 分支')
+ok(/default:\s*\n\s*return \{ ok: false, error: \{ code: 'bad-request', message: `unknown method: \$\{method\}` \} \};/.test(
+  rpcLines.slice(switchLine, switchLine + 4000).join('\n'),
+), 'default 分支回 `unknown method: <method>`（未知方法必须报错，不能静默）')
 
 // ---- 2) B：handleMethod() 里的前缀改道 ----------------------------------------
-// 从源码里读「哪些前缀被改道」以及「改道到哪个处理器」，不硬编码前缀表。
+// 解析器保留（原版从源码读「哪些前缀被改道」）。裁剪后前缀改道已整体删除，
+// 这里解析出 0 个是**新事实**；上游同步带回改道分支时这里自动重新计数。
 const handleStart = rpcLines.findIndex((l) => /function\s+handleMethod\s*\(/.test(l))
 ok(handleStart >= 0, `找到 handleMethod()（第 ${handleStart + 1} 行）`)
 
-// 改道分支形如： if (method.startsWith('opencode.')) { ... handleOpencodeRpc(...) }
 const prefixes = []
-// 单方法改道：`if (method === 'baizhi.startSession') { … }`（2026-11-04 上游新增）。
-// ⚠️ 它不是 `startsWith('<prefix>.')`，所以下面的前缀循环扫不到 —— 漏了就会让
-// 「方法总数」少一个，而控制台那边即使接了也对不上账。
 const singleMethods = []
 // 边界：只在 handleMethod 函数体里扫，即 [handleStart, switchLine)。
 for (let i = handleStart; i < switchLine; i++) {
@@ -145,7 +95,6 @@ for (let i = handleStart; i < switchLine; i++) {
   }
   const m = line.match(/method\.startsWith\('([A-Za-z][A-Za-z0-9_-]*)\.'\)/)
   if (!m) continue
-  // 在随后几行里找它调用的处理器名
   let handler = null
   for (let k = i; k < Math.min(i + 6, rpcLines.length); k++) {
     const h = rpcLines[k].match(/await\s+(handle\w*Rpc)\s*\(/)
@@ -153,13 +102,8 @@ for (let i = handleStart; i < switchLine; i++) {
   }
   prefixes.push({ prefix: m[1], handler, line: i + 1 })
 }
-ok(prefixes.length > 0, `handleMethod() 里识别到 ${prefixes.length} 个前缀改道分支`)
-for (const p of prefixes) console.log(`     ${p.prefix}.* → ${p.handler}（第 ${p.line} 行）`)
 
 // 处理器名 → 源文件：从 jet-hub-rpc.js 的 import 语句里解析，别猜文件名。
-// ⚠️ 必须支持**多名导入**（2026-11-04 上游同步踩到）：`baizhi-rpc.js` 那句是
-// `import { parseBaizhiCredential, handleBaizhiRpc, baizhiSlotNamesOf } from './baizhi-rpc.js'`，
-// 旧的正则只认 `{ handleXxxRpc }` 单个名字 ⇒ 解析不到 ⇒ 误报「处理器找不到源文件」。
 const importMap = {}
 for (const l of rpcLines) {
   const m = l.match(/^import\s*\{([^}]*)\}\s*from\s*'\.\/(.+?\.js)'/)
@@ -169,58 +113,25 @@ for (const l of rpcLines) {
     if (/^handle\w*Rpc$/.test(name)) importMap[name] = m[2]
   }
 }
-ok(Object.keys(importMap).length > 0, `解析到 ${Object.keys(importMap).length} 个处理器 import`)
-
-// 同一个处理器可能被多个前缀共用（`handleMonkeycodeRpc` 同时服务 `monkeycode.` 与
-// `monkeycodeintl.`，靠第 5 个 product 参数区分），所以先把「handler → 前缀列表」
-// 聚起来，再决定每个 case 该展开成哪些方法名。
-for (const p of prefixes) {
-  if (p.handler === null) ok(false, `前缀 ${p.prefix}.* 的改道分支后面没找到 await handleXxxRpc(...)`)
-}
-
-const handlerPrefixes = new Map()
-for (const p of prefixes) {
-  if (p.handler === null) continue
-  const list = handlerPrefixes.get(p.handler) ?? []
-  list.push(p.prefix)
-  handlerPrefixes.set(p.handler, list)
-}
 
 const prefixCases = []
-for (const [handler, prefixList] of handlerPrefixes) {
-  const file = importMap[handler]
-  if (!file) {
-    ok(false, `前缀 ${prefixList.join('/')}.* 的处理器 ${handler} 找不到源文件（import 里没有）`)
-    continue
-  }
+for (const p of prefixes) {
+  if (p.handler === null) { ok(false, `前缀 ${p.prefix}.* 的改道分支后面没找到 await handleXxxRpc(...)`); continue }
+  const file = importMap[p.handler]
+  if (!file) { ok(false, `前缀 ${p.prefix}.* 的处理器 ${p.handler} 找不到源文件（import 里没有）`); continue }
   const src = linesOf(path.join(ROOT, 'vendor', 'lib', file))
-  const qualified = []
-  const bare = []
+  const found = []
   for (const l of src) {
     const full = l.match(/^\s*case '([A-Za-z][A-Za-z0-9_-]*\.[A-Za-z][A-Za-z0-9_-]*)'\s*:/)
-    if (full) {
-      qualified.push(full[1])
-      continue
-    }
+    if (full && full[1].startsWith(`${p.prefix}.`)) { found.push(full[1]); continue }
     const plain = l.match(/^\s*case '([A-Za-z][A-Za-z0-9_-]*)'\s*:/)
-    if (plain) bare.push(plain[1])
-  }
-  const found = []
-  for (const name of qualified) {
-    if (prefixList.some((prefix) => name.startsWith(`${prefix}.`))) found.push(name)
-  }
-  // 裸名 case（`case 'addAccount':`）：方法全名由**调用处**的前缀拼出来，所以按该
-  // handler 的每个前缀各展开一份 —— 两站共用同一函数时就是这个写法（2026-11-04 上游）。
-  for (const name of bare) {
-    for (const prefix of prefixList) found.push(`${prefix}.${name}`)
+    if (plain) found.push(`${p.prefix}.${plain[1]}`)
   }
   const unique = [...new Set(found)]
-  ok(unique.length > 0, `${file} 里认出 ${unique.length} 个 ${prefixList.join('/')}.* 方法`)
-  // 前缀和文件名不一定同名（minimaxintl → minimax-rpc.js），这里把实际文件名打出来
-  console.log(`     ${prefixList.join('/')}.* → vendor/lib/${file}（${unique.length} 个：${unique.join(', ')}）`)
+  ok(unique.length > 0, `${file} 里认出 ${unique.length} 个 ${p.prefix}.* 方法`)
   for (const f of unique) prefixCases.push(f)
 }
-console.log(`  B) 前缀改道方法数: ${prefixCases.length}`)
+console.log(`  B) 前缀改道方法数: ${prefixCases.length}${prefixes.length ? '' : '（裁剪后为 0，符合预期）'}`)
 
 const singleCaseMethods = singleMethods.map((s) => s.method)
 
@@ -233,650 +144,45 @@ const methods = [...new Set([...mainCases.map((c) => c.method), ...prefixCases, 
 const mainMethodSet = new Set(mainCases.map((c) => c.method))
 console.log(`\n  本体实际可调度方法总数: ${methods.length}（主 switch ${mainMethodSet.size} + 前缀改道 ${prefixCases.length} + 单方法改道 ${singleCaseMethods.length}）`)
 if (singleCaseMethods.length > 0) console.log(`  单方法改道: ${singleCaseMethods.join(', ')}`)
-console.log(`  其中共享实现体的标签: ${fallThrough.length ? fallThrough.join(', ') : '无'}`)
-// 总数锚点：上面三条解析链任何一条「少认几个」时，下面的相对判据（并发、覆盖、无重叠）
-// 可能依然全绿 —— 实测把单方法改道整段退回是 90 个仍绿、删掉一个裸名 case 是 89 个仍绿。
-// 所以这里钉死总数；上游加减方法时必须同步这个常量（它同时是「解析没退化成空」的兜底）。
-const EXPECTED_RPC_METHOD_COUNT = 93
+// 总数锚点：解析链「少认几个」时，相对判据可能依然全绿。钉死总数；
+// 上游加减方法时必须同步这个常量（它同时是「解析没退化成空」的兜底）。
+// 56 = 裁剪版主 switch 的全部 case（前缀改道 / 单方法改道均为 0）。
+const EXPECTED_RPC_METHOD_COUNT = 56
 ok(methods.length === EXPECTED_RPC_METHOD_COUNT,
   `本体可调度方法总数应为 ${EXPECTED_RPC_METHOD_COUNT}，实际 ${methods.length}（上游加减方法时必须同步这个常量）`)
-// baizhi.startSession 不走 `startsWith` 前缀，是单独一条 `if (method === '…')`；
-// 它一旦被改名或删掉，前缀扫描认不出来、总数也只少 1，只有这里点名才抓得住。
-ok(singleCaseMethods.includes('baizhi.startSession'),
-  `单方法改道里必须有 baizhi.startSession，实际：${singleCaseMethods.join(', ') || '无'}`)
-ok(fallThrough.includes('credits.permanentLock'),
-  'credits.permanentLock 与 loomy.permanentLock 是同一实现的两个 label（fall-through）')
+// marvis 链路必经的几个方法点名（少一个 = 新建/签到/用量链路断了）。
+for (const must of ['account.list', 'account.create', 'account.delete', 'login.poll', 'credits.balances', 'credits.claimAll', 'credits.status', 'model.list']) {
+  ok(methods.includes(must), `方法面里有 ${must}（marvis 链路必经）`)
+}
+// 裁剪反向锚点：28 家专属的方法**必须不在**方法面里 —— 多留一个说明裁剪不干净。
+for (const gone of ['captcha.demand', 'captcha.carrierUrl', 'captcha.contribute', 'loomy.permanentLock']) {
+  ok(!methods.includes(gone), `${gone} 已随裁剪删除（不该再出现在方法面里）`)
+}
+ok(!methods.some((m) => /^(qiniu|modelscope|baizhi|minimax|minimaxintl|opencode|gemini|qoder|monkeycode|monkeycodeintl|loomy|magicrew|workbuddy|cline|zcode)\./.test(m)),
+  `方法面里没有 28 家专属前缀的方法（实际前缀分布：${[...new Set(methods.map((m) => m.split('.')[0]))].join(', ')}）`)
+// fall-through 裁剪后应为空：loomy.permanentLock 别名已删，credits.permanentLock 独立成 case。
+ok(fallThrough.length === 0, `主 switch 没有共享实现体的 fall-through 标签（实际：${fallThrough.join(', ') || '无'}`)
 
-// ---- 4) 控制台覆盖率 ----------------------------------------------------------
-// 【口径：方法名必须能解析到「字面量」，否则本测试判红】
+// ---- 4) vendor 本地补丁必须还在（docs/vendor.md 的同步会整片覆盖 vendor/）----
 //
-// 本测试**不**对整份源码做 `includes("'<方法名>'")`（那是旧版做法，等于碰运气：
-// 名字一旦进了变量就数不到，而当时能数对只是因为名字恰好以字面量出现在旁边的
-// const 里 —— 巧合，不是判据）。现在逐个解析 `console.js` 里 `rpc(<实参>, …)` 的实参：
-//   - 实参是字面量          → 就是方法名（实测 57 处；这个数随控制台迭代变，别当契约）
-//   - 实参是标识符          → 回溯同文件的 const/let 绑定里的字面量（如 lockMethod）
-//   - 实参是 `<obj>.<field>` → 回溯对象字面量的该字段（如 KEY_CHANNELS[p].method）
-//   - 实参是**转发函数的形参** → 找该函数的全部调用点，取同位置的字面量实参
-//                              （如 accBulk(btn, method) 的 'account.resetAll'）
-// 任何实参**解析不出字面量**（模板串拼装 `'account.' + act`、从接口/配置里取、
-// 跨文件导入……）都判红，并指名是哪一行 —— 因为那样本测试就数不到它，
-// 覆盖率会静默偏低，而「漏计」和「没接」在报告里长得一模一样。
-// 这就是与控制台的约定：**新的方法名一律写成字面量常量**（必要时先 `const M = 'x.y'`
-// 再传变量），不要拼装。
-// 反向也收紧：`console.js` 里出现某方法名字面量但**没进任何 rpc() 调用点**（只用于
-// 比较、日志、i18n 文案）不算「已接」—— 这也是旧版整文件 grep 的漏洞之一。
-const consoleLines = linesOf(CONSOLE_JS)
-// ⚠️ `-` / `_` 放开是为了认 kebab_case 的方法名（如 `foo-bar.baz`）—— 今天 9 个前缀
-// 都是纯字母数字，但上游随时可能引入带连字符的 provider 名，收窄回去等于给以后的自己
-// 埋一个「新家接了却不计入」的静默漏计。代价：handler 文件里 kebab-case 的
-// **非 RPC 枚举 case**（如 `case 'already-claimed':`）也会被算成一个方法。
-// 今天 8 个 handler 文件里没有这种写法（真实例 claimed / already-claimed / inactive
-// / failed 都在 `jet-hub-rpc.js` 的 `computeClaimSummary()` 里、即 `:525`
-// `switch (outcome.kind)` 那组，不带点、不受影响）；将来若出现，
-// 总数锚点会报红 —— 那时该 case 应当在解析处显式排除，而不是把总数改大。
-const METHOD_SHAPE = /^[A-Za-z][A-Za-z0-9_-]*\.[A-Za-z][A-Za-z0-9_-]*$/
-const literalsIn = (line) => [...line.matchAll(/'([^'\\\n]{3,80})'|"([^"\\\n]{3,80})"/g)]
-  .map((m) => m[1] ?? m[2])
-  .filter((s) => METHOD_SHAPE.test(s))
-// 拼正则前必须先转义标识符；同一条也适用于模板串里的 `\s`
-// —— `\s` 写进模板串会被 JS 吃成 `s`，正则变成 `consts`，绑定永远匹配不上，
-//    于是整个「实参回溯」静默失效、误报「解析不出」。这坑真踩过（13:35 那轮）。
-const escapeRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-
-/** 解析 `rpc(...)` 的实参表达式 → { names: [], why } 或 { names: [], unresolved: '原因' } */
-function resolveArg(arg, atLine) {
-  const expr = arg.trim()
-  // (a) 字面量：'x.y'
-  const lit = expr.match(/^'([^']+)'$|^"([^"]+)"$/)
-  if (lit) return { names: [lit[1] ?? lit[2]] }
-  // (b) 标识符：回溯 const/let/var 绑定（含三元两条臂）
-  if (/^[A-Za-z_$][\w$]*$/.test(expr)) {
-    // b1) 直接绑定 —— **按调用点可见性取最近的同名绑定**，不是取第一个。
-    //     踩过的坑（2026-10-28）：`cfg` 在 console.js 里有 5 个绑定
-    //     （:386/:405 是 KEY_CHANNELS，:509/:516/:536/:563 是 PROXY_CHANNELS），
-    //     旧实现从头扫一遍、撞上第一条就返回，于是 `rpc(cfg.testProxy)`
-    //     被解析成 APIKEY 的字段、报「解析不出」—— 这是测试自己误报，
-    //     控制台那边的写法是对的（同名的局部变量在不同函数里各有含义）。
-    const bindRe = new RegExp(`(?:const|let|var)\\s+${expr}\\s*=`)
-    let boundAt = -1
-    for (let i = 0; i < Math.min(atLine - 1, consoleLines.length); i++) {
-      if (bindRe.test(consoleLines[i])) boundAt = i
-    }
-    const names = []
-    if (boundAt >= 0) names.push(...literalsIn(consoleLines[boundAt]))
-    if (!names.length) {
-      // 没有前序绑定（可能是提升/函数作用域写法）→ 退回旧行为：全文第一个
-      for (const l of consoleLines.slice(atLine - 1)) {
-        if (bindRe.test(l)) { names.push(...literalsIn(l)); break }
-      }
-    }
-    let isParam = false
-    if (names.length) return { names }
-    // b2) 是某个函数的形参 → 找全部调用点，取同位置的字面量实参
-    for (const l of consoleLines) {
-      const sig = l.match(/(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(([^)]*)\)/)
-        ?? l.match(/(?:const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?\(([^)]*)\)\s*=>/)
-      if (!sig) continue
-      const params = sig[2].split(',').map((s) => s.trim().split(/\s*=\s*/)[0].trim())
-      const idx = params.indexOf(expr)
-      if (idx < 0) continue
-      // ⚠️ `rpc(method, payload = {})` 自己不算「转发形参」：它的 method 是运行时变量，
-      //    不是调用点传进来的字面量。若让它参与回溯，那么**任何** `rpc(method)` 形式的
-      //    调用点都会被展开成「全体 rpc 调用点字面量的并集」—— 一个隐形的万能通配，
-      //    能把覆盖率虚抬到 100%。2026-10-28 实测：这个通配把 console.js:20 的定义行
-      //    抬成 67 个方法。真正的转发形参（如 `accBulk(btn, method)`）照旧生效。
-      if (sig[1] === 'rpc') continue
-      isParam = true
-      const fname = sig[1]
-      const callRe = new RegExp(`\\b${fname}\\(([^()]*)\\)`, 'g')
-      for (const l2 of consoleLines) {
-        let cm
-        callRe.lastIndex = 0
-        while ((cm = callRe.exec(l2)) !== null) {
-          const args = cm[1].split(',').map((s) => s.trim())
-          const got = literalsIn(args[idx] ?? '')
-          names.push(...got)
-        }
-      }
-    }
-    if (isParam && names.length) return { names: [...new Set(names)] }
-    return { names: [], unresolved: `标识符 ${expr} 既不是字面量常量绑定，也不是「调用点都传字面量」的转发形参` }
-  }
-  // (c) <obj>.<field>：回溯对象字面量字段（含「表取一层再取字段」：
-  //     例 `const cfg = KEY_CHANNELS[provider]` + `rpc(cfg.method)`，
-  //     方法名在 KEY_CHANNELS 这个**嵌套**对象字面量的 method 字段里）
-  const member = expr.match(/^([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)$/)
-  if (member) {
-    const [, obj, field] = member
-    const names = fieldLiterals(obj, field, 0, undefined, atLine)
-    if (names.length) return { names: [...new Set(names)] }
-    return { names: [], unresolved: `成员表达式 ${expr} 回溯不到对象字面量里的字面量字段` }
-  }
-  return { names: [], unresolved: `实参形状 ${JSON.stringify(expr)} 不是字面量/标识符/成员表达式（疑似拼装）` }
-}
-
-// 在对象字面量里找某字段的字面量值；obj 本身也可能是「从另一个对象字面量里按 key 取」
-// （`const cfg = KEY_CHANNELS[provider]`），那就先顺着 key 回到那张表再取字段。
-// depth 限 2 层，够用且不会在互相引用的表之间绕圈。
-function fieldLiterals(obj, field, depth, viaKey, atLine) {
-  if (depth > 2) return []
-  let derivedFrom = null
-  // 1) 直接绑定：const <obj> = { ... }（整块）或 = <TABLE>[k]（从表里取一层）
-  // ⚠️ 模板字符串里写 `\s` 会被 JS 当成转义序列吃掉（`\s` → `s`），
-  //    正则于是变成 `consts`，永远匹配不到绑定 —— 一处复发式误报的根因。
-  //    统一走 escapeRe() 拼正则。
-  const id = escapeRe(obj)
-  const bindRe2 = new RegExp(`(?:const|let|var)\\s+${id}\\s*=\\s*(.+)$`)
-  const limit2 = atLine ? Math.min(atLine - 1, consoleLines.length) : consoleLines.length
-  let start = -1
-  for (let i = 0; i < limit2; i++) if (bindRe2.test(consoleLines[i])) start = i
-  if (start < 0 && atLine) {
-    for (let i = 0; i < consoleLines.length; i++) if (bindRe2.test(consoleLines[i])) { start = i; break }
-  }
-  if (start >= 0) {
-    const rhs = consoleLines[start].match(bindRe2)[1].trim()
-    const fromTable = rhs.match(/^([A-Za-z_$][\w$]*)\[.+\]$/)
-    if (fromTable) derivedFrom = fromTable[1]
-  }
-  // 2) 常量字符串 → 没有字段，放弃
-  if (!derivedFrom && start < 0) return []
-
-  const scan = (begin, end, label) => {
-    const out = []
-    for (let i = begin; i < end; i++) {
-      const fm = consoleLines[i].match(new RegExp(`^\\s*${field}\\s*:\\s*(.+?),?\\s*$`))
-      if (fm) out.push(...literalsIn(fm[1]))
-    }
-    return out
-  }
-
-  if (derivedFrom) {
-    // 回到那张表（TABLE 自身的定义）扫它的全部字段
-    const tStart = consoleLines.findIndex((l) => new RegExp(`(?:const|let|var)\\s+${derivedFrom}\\s*=\\s*\\{`).test(l))
-    if (tStart >= 0) {
-      let tEnd = consoleLines.length
-      for (let i = tStart + 1; i < consoleLines.length; i++) if (new RegExp(`^\\}?\\s*$|^\\};?\\s*$`).test(consoleLines[i])) { tEnd = i; break }
-      const names = scan(tStart + 1, tEnd, derivedFrom)
-      if (names.length) return names
-    }
-    return viaKey ? [] : fieldLiterals(derivedFrom, field, depth + 1, true)
-  }
-
-  // 3) 直接对象字面量：从定义行扫到第一个顶层 `}`
-  const names = []
-  for (let i = start + 1; i < consoleLines.length; i++) {
-    if (/^\}/.test(consoleLines[i])) break
-    const fm = consoleLines[i].match(new RegExp(`^\\s*${field}\\s*:\\s*(.+?),?\\s*$`))
-    if (fm) names.push(...literalsIn(fm[1]))
-  }
-  return names
-}
-
-const rpcCallSites = []
-for (let i = 0; i < consoleLines.length; i++) {
-  const l = consoleLines[i]
-  const re = /(?<![\w$.])rpc\(\s*([^,()\n]+?)\s*[,)]/g
-  let m
-  re.lastIndex = 0
-  while ((m = re.exec(l)) !== null) {
-    // 跳过函数定义行 `async function rpc(method, payload = {})`
-    // ⚠️ 2026-10-28 修：原判据 `/function\s+rpc\s*$/` 作用在 `l.slice(0, m.index)` 上，
-    //    而 m.index 正落在 `rpc(` 的开头，切片以 "function " 结尾、**不含 "rpc"** ——
-    //    所以这条守卫从来没触发过，定义行被当成一个「调用点」，其实参 `method`
-    //    又被下面的形参回溯展开成「全体调用点字面量的并集」，等于往统计里塞了
-    //    一张万能通配。实测证据：加 viaParam 打印后，console/console.js:20 报出
-    //    67 个方法名、经 rpc+accBulk。现在按「切片以 function 结尾」判。
-    if (/(?:async\s+)?function\s+$/.test(l.slice(0, m.index))) continue
-    rpcCallSites.push({ line: i + 1, arg: m[1], ...resolveArg(m[1], i + 1) })
-  }
-}
-const unresolvedSites = rpcCallSites.filter((s) => s.unresolved)
-ok(unresolvedSites.length === 0,
-  `${rpcCallSites.length} 个 rpc() 调用点的实参全部解析到字面量方法名`
-  + (unresolvedSites.length ? `；解析不出的：` + unresolvedSites.map((s) => `console/console.js:${s.line} rpc(${s.arg})`).join(' · ') : ''))
-
-const used = [...new Set(rpcCallSites.flatMap((s) => s.names))]
-  .filter((m) => methods.includes(m))
-const ghosts = [...new Set(rpcCallSites.flatMap((s) => s.names))].filter((m) => !methods.includes(m))
-const unused = methods.filter((m) => !used.includes(m))
-console.log(`  控制台已接: ${used.length} / ${methods.length}`)
-console.log(`  控制台未接: ${unused.length}${unused.length ? '\n    ' + unused.join('\n    ') : ''}`)
-
-// 未接清单**不维护任何硬编码名单**（以前写死过「13 个」「11 个」，控制台接两个就过时）。
-// 判据是从源码推导的两条规则：
-//   规则 A：主 switch 里的方法**一个都不许未接** —— 控制台的主要操作面，漏接即红。
-//   规则 B：前缀改道那一批允许未接（控制台还没有账号级代理 / 匿名账号的 UI），
-//           但**只报告不失败**，接上了自动从清单里消失。
-//   规则 C：`DELEGATED` 表里的方法**已明确交给 magpie 自己的界面**，控制台不再接
-//           是**有意为之**，不算缺口。这张表是**具名的、逐条的**，不是笼统豁免 ——
-//           每加一条都要写清「magpie 哪个界面接手了」，否则规则 A 会一直红着
-//           逼人回来解释（2026-10-29 用户要求「重复的功能控制台移除掉」）。
-// 所以「现在缺几个」永远等于本测试这次打印的数，文档不要抄死数字。
-const DELEGATED = new Map([
-  ['provider.status', 'magpie「Providers」页的供应商行（模型数 / 账号数 / 启用状态）'],
-  ['provider.setEnabled', 'magpie「Providers」页的行内开关（provider/on · provider/off）'],
-  ['provider.getOrder', 'magpie「Providers」页的拖拽顺序（本体 providerOrder 只是 DSH 里的显示顺序）'],
-  ['provider.setOrder', 'magpie「Providers」页的拖拽顺序'],
-  ['gateway.setEnabled', 'magpie Settings › Network and sharing（网关本身由 magpie 持有）'],
-  ['gateway.setAllowLan', 'magpie Settings › Network and sharing 的局域网共享开关（settings/lan）'],
-  // model.* 的对等范围是「看模型 + 开关」。**不含** dead 标记：model.list 返回全量
-  // （enabled / disabled / dead 都在），magpie 编辑器展示的是 provider 契约给的字段，
-  // dead 状态不在契约里，也没有清理入口 —— 所以 clearDead 走的是 DROPPED 而不是这里。
-  ['model.list', 'magpie「Providers」编辑器的模型列表（勾上即 exposed；不含 dead 标记）'],
-  ['model.setDisabled', 'magpie「Providers」编辑器里勾掉某个模型'],
-  ['model.setAllDisabled', 'magpie「Providers」编辑器的 Select none（一个都不提供；按钮文案以 magpie 当前 UI 为准）'],
-  ['model.setDisabledMany', 'magpie「Providers」编辑器的批量勾选'],
-])
-
-// 规则 D：`DROPPED` 表里的方法**控制台主动弃用，magpie 也没有对等界面** ——
-//         与 DELEGATED 不同，它没有「谁接手」，所以必须单独记，不能混进上表
-//         假装有去处。每条要写清「为什么可以不要」（2026-10-31 用户要求
-//         「clearDead 一并删掉」）。
-const DROPPED = new Map([
-  ['model.clearDead', '本体 state.json 里给模型打的 dead 标记；它带 30 天 TTL 自动回收（vendor/lib/dead-model-store.js 的 DEFAULT_TTL_DAYS，DSH_DEAD_MODEL_TTL_DAYS 可调、0 为永不过期），失效模型在 model.list 里照样列出，magpie 侧不需要「清空」这个动作（2026-10-31 用户同意一并删掉）'],
-  // 用量账本：magpie 的「Usage」页读的就是同一份 ~/.config/magpie/usage.jsonl
-  // （internal/usage/usage.go 的 Path()），而且更全：四维分组、图表、CSV、成本、按天/区间、分页。
-  // 控制台这份只有三个按钮，2026-10-31 删掉。
-  ['usage.tokenLedger', '用量账本：magpie「Usage」页读同一份 usage.jsonl，还更全'],
-  ['usage.tokenLedgerHistory', '历史账本：同上，magpie 的 Usage 页可按天/区间看'],
-  ['usage.tokenLedgerDeleteDay', '删某天账本：控制台不再代劳 —— magpie 的 Usage 页自己按天/区间看，要真删就动 ~/.config/magpie/usage.jsonl'],
-  // 聚合路由那两块配置页同一天一并删掉（用户：「聚合路由和聚合候选插件没有接入，有必要留着嘛」）。
-  // 判据：插件按 DSH_PROVIDERS 注册 magpie provider，里面**不含** aggregate / jet-hub-auto；
-  // magpie 的模型目录（以 page/models.js 快照为准）全是 `jet-hub-<provider>/` 前缀
-  // ⇒ 没有任何请求会走到这两个路由组，那些开关配的是没人经过的路。
-  ...['catalog', 'expiryOrder', 'activeProvider', 'setOrderMode', 'clearRejected',
-    'rejectNonExpiring', 'setAllowed', 'setRejected', 'setOrder']
-    .map((m) => [`aggregate.${m}`, '聚合路由配置：magpie 侧没有对等入口，且插件不注册 aggregate']),
-])
-
-// 交给别人接的 + 主动弃用的，合起来才是「控制台不该再接」的全集。
-const HANDED_OFF = new Map([...DELEGATED, ...DROPPED])
-const unusedMain = unused.filter((m) => mainMethodSet.has(m) && !HANDED_OFF.has(m))
-const delegatedUnused = unused.filter((m) => DELEGATED.has(m))
-const droppedUnused = unused.filter((m) => DROPPED.has(m))
-const unusedPrefix = unused.filter((m) => !mainMethodSet.has(m) && !HANDED_OFF.has(m))
-// 存在性锚点：表里每一条都必须**真的**是本体方法。少了这条，某条方法被删/改名后
-// `unusedMain` 与 `handedOffStillWired` 都不会命中 —— 测试全绿，表静默过期，
-// 一直谎报「交给 magpie 了」（2026-10-29 审查发现）。
-const handedOffMissing = [...HANDED_OFF.keys()].filter((m) => !methods.includes(m))
-ok(handedOffMissing.length === 0,
-  `交给别人 / 主动弃用的 ${HANDED_OFF.size} 个方法都真实存在`
-  + (handedOffMissing.length ? `；找不到：${handedOffMissing.join(', ')}` : ''))
-ok(unusedMain.length === 0,
-  // 被减数只能算「主 switch 里的」那部分 —— 否则 HANDED_OFF 一旦加进前缀方法，
-  // 数字就偏（2026-10-29 审查发现）。
-  `主 switch 里控制台该接的 ${mainMethodSet.size - [...HANDED_OFF.keys()].filter((m) => mainMethodSet.has(m)).length} 个方法全都接了`
-  + (unusedMain.length ? `；未接 ${unusedMain.length} 个：${unusedMain.join(', ')}` : ''))
-if (delegatedUnused.length) {
-  console.log(`  交给 magpie 界面（控制台不接，${delegatedUnused.length} 个）：`)
-  for (const m of delegatedUnused) console.log(`    ${m} → ${DELEGATED.get(m)}`)
-}
-if (droppedUnused.length) {
-  console.log(`  主动弃用（magpie 也没有对等界面，${droppedUnused.length} 个）：`)
-  for (const m of droppedUnused) console.log(`    ${m} → 弃用理由：${DROPPED.get(m)}`)
-}
-// 反向锚点：HANDED_OFF 里的每一条都必须**真的**未接 —— 否则说明控制台又接回去了，
-// 那张表就成了谎话（用户明确要求移除的东西又冒出来）。
-const handedOffStillWired = [...HANDED_OFF.keys()].filter((m) => used.includes(m))
-ok(handedOffStillWired.length === 0,
-  `交给 magpie / 主动弃用的 ${HANDED_OFF.size} 个方法控制台确实都没接`
-  + (handedOffStillWired.length ? `；又接回去了：${handedOffStillWired.join(', ')}` : ''))
-// 未接项只可能来自前缀改道或单方法改道（规则 A 通过时这一条自动成立，留着当交叉校验）
-ok(unusedPrefix.every((m) => prefixCases.includes(m) || singleCaseMethods.includes(m)),
-  `未接项全部属于前缀改道（${unusedPrefix.length} 个）`)
-if (unusedPrefix.length) {
-  // 按 provider 分组报，比一长串更好读，也顺便暴露「哪家整体没入口」
-  const byProvider = new Map()
-  for (const m of unusedPrefix) {
-    const p = m.split('.')[0]
-    byProvider.set(p, [...(byProvider.get(p) ?? []), m])
-  }
-  console.log(`  已知接线缺口（前缀改道，控制台无 UI）${unusedPrefix.length} 个：`)
-  for (const [p, list] of [...byProvider].sort()) console.log(`    ${p}: ${list.join(', ')}`)
-}
-
-// 反向锚点：Loomy 的永久锁定**不是**未接项。控制台经变量 `lockMethod` 调
-// `loomy.permanentLock`（console/console.js:1145 的 const，三个调用点共用）；实例实测
-// 回 `{provider:'loomy',locked:true}`（200）。它一旦被算成未接，说明调用从
-// 字面量常量变成了拼装/间接形式 —— 那正是上面第 4 节开头禁止的写法。
-ok(!unused.includes('loomy.permanentLock'),
-  'loomy.permanentLock 已由控制台接通（经 lockMethod 变量，不是未接项）')
-
-// 前缀改道的 9 家：控制台要么接了几个、要么明确还缺几个 —— 但不能**整个忽略**
-// （一家都没有任何处置 = 这家在控制台里完全不存在）。
-for (const p of [
-  'opencode.', 'gemini.', 'qoder.', 'minimaxintl.', 'modelscope.',
-  'qiniu.', 'monkeycode.', 'monkeycodeintl.', 'baizhi.',
-]) {
-  const missed = unused.filter((m) => m.startsWith(p))
-  ok(missed.length > 0 || used.some((m) => m.startsWith(p)),
-    `控制台对 ${p}* 有处置（接了 ${used.filter((m) => m.startsWith(p)).length} / 缺 ${missed.length}）`)
-}
-
-// 控制台不该调本体不存在的方法（会静默 unknown method）
-ok(ghosts.length === 0, `控制台没有调用不存在的方法${ghosts.length ? '：' + ghosts.join(', ') : ''}`)
-
-// ---- 5) 可调用性：真发一次空 payload，断言不是 unknown method -----------------
-// 这一条是 Jeb 的反证逼出来的：光看 case 标签会漏掉「标签在但没接进调度」。
-//
-// ⚠️⚠️ 空 payload 探活**并不天然安全**：下面这些 case 的入口没有「缺参数就
-// bad-request」的闸，空 payload 会真的执行到写盘 / 发上游请求。逐个核对过实现体：
-//   aggregate.rejectNonExpiring  无闸 → clearAggregateAllowedExcept(...) 改聚合白名单
-//   backup.import                无闸 → mode 缺省即 'replace'，会用空 payload 覆盖整库
-//   captcha.contribute           无闸 → 往载体参数表里写一条
-//   account.retest / retestAll   无闸 → 发真实上游请求并清限流标记
-//   account.reset / resetAll     无闸 → 清限流标记（改 state.json）
-//   credits.claimAll             无闸 → 对每条账号真发领取请求
-//   account.create               无闸 → 建占位账号（Jeb 探它时就建出过
-//                                gemini-4da6f7c8 / minimaxintl-a579da3c，事后用
-//                                account.delete 清的 —— 所以它**必须**在这张表里）
-const SIDE_EFFECTS = new Map([
-  ['aggregate.rejectNonExpiring', '改聚合白名单'],
-  ['backup.import', "缺省 mode='replace'，会覆盖整库"],
-  ['captcha.contribute', '写载体参数表'],
-  ['account.retest', '发真实上游请求 + 清限流标记'],
-  ['account.retestAll', '同上，且遍历全部账号'],
-  ['account.reset', '清限流标记'],
-  ['account.resetAll', '同上，且遍历全部账号'],
-  ['credits.claimAll', '对每条账号真发领取'],
-  ['account.create', '建占位账号'],
-])
-
-// 探活**必须**不改变用户状态：调用前后比对这几份权威文件的内容，一变即判红。
-// 这条是给「以后新加的 case 忘加闸」用的安全网——它自己不该被触发。
-//
-// ⚠️ 2026-10-28 踩过的坑：最初用**文件字节 sha1**做指纹，结果对
-// aggregate.clearRejected 空载荷误报「改写了状态」。复核（_probe-clearrejected.mjs
-// A/B 对照）证明：内容一字未变，只是 mtime 被改了 —— 有并发写方（多实例 / UI 轮询）
-// 会把同样的内容重写一遍。所以指纹必须是**规范化 JSON 内容**，mtime 一律不参与。
-const STATE_FILES = ['state.json', 'permanent-locks.json', 'auto-checkin.json']
-  .map((f) => path.join(process.env.USERPROFILE || process.env.HOME || '', '.dsh', 'jet-hub', f))
-const canon = (v) => {
-  if (v === null || typeof v !== 'object') return JSON.stringify(v)
-  if (Array.isArray(v)) return `[${v.map(canon).join(',')}]`
-  const keys = Object.keys(v).sort()
-  return `{${keys.map((k) => `${JSON.stringify(k)}:${canon(v[k])}`).join(',')}}`
-}
-const fingerprint = () => STATE_FILES.map((p) => {
-  try { return crypto.createHash('sha1').update(canon(JSON.parse(fs.readFileSync(p, 'utf8')))).digest('hex').slice(0, 12) }
-  catch { return 'absent' }
-}).join('|')
-// 指纹只回答「变没变」；要**说清变了什么**（写进报告的证据），再给一个 diff。
-const stateJson = () => STATE_FILES.map((p) => {
-  try { return { file: path.basename(p), json: JSON.parse(fs.readFileSync(p, 'utf8')) } }
-  catch { return { file: path.basename(p), json: null } }
-})
-const diffKeys = (a, b) => {
-  const out = []
-  for (let i = 0; i < a.length; i++) {
-    const fa = a[i].json, fb = b[i].json
-    if (JSON.stringify(fa) === JSON.stringify(fb)) continue
-    const keys = new Set([...Object.keys(fa ?? {}), ...Object.keys(fb ?? {})])
-    for (const k of keys) {
-      if (canon(fa?.[k]) !== canon(fb?.[k])) out.push(`${a[i].file}:${k}`)
-    }
-  }
-  return out
-}
-const callable = { checked: 0, unknown: [], errors: [], skipped: [] }
-
-// 单请求超时 5s（旧版 15s × 78 串行 = 最坏 19 分钟，正是「挂住」的来源）。
-const REQUEST_TIMEOUT = Number(process.env.JET_HUB_PROBE_TIMEOUT || 5_000)
-// 限并发 6：本地 HTTP 服务扛得住，78 个方法从「分钟级」降到「秒级」。
-const CONCURRENCY = Math.max(1, Number(process.env.JET_HUB_PROBE_CONCURRENCY || 6))
-
-async function callOne(base, method, timeoutMs = REQUEST_TIMEOUT) {
-  const body = {
-    type: 'client-request', rpcId: 'probe', method: 'jet-hub',
-    payload: { method, payload: {} },
-  }
-  const r = await fetch(`${base}/api/jet-hub`, {
-    method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs),
-  })
-  return r.text()
-}
-
-// 极简并发池：不引依赖，跑完即返回；单个任务抛错由调用方自己吞。
-async function pool(items, limit, worker) {
-  let next = 0
-  const run = async () => {
-    while (next < items.length) {
-      const i = next++
-      await worker(items[i], i)
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, run))
-}
-
-// 网关 3425 不暴露管理路由；控制台地址从本体自己写的快照读。
-// ⚠️ 快照会**过期**：本体每次启动把当前地址写进去，进程退出后文件仍留着旧端口
-// （实测 2026-10-28：文件写 18502，而活的实例在 18500 / 18501）。所以拿到快照
-// 地址后必须再验一次活，不行就沿端口区间扫——否则测试会静默退化成 NOT RUN，
-// 「可调用性」这条最重要的断言就白写了。
-function snapshotUrls() {
-  const candidates = [
-    process.env.JET_HUB_CONSOLE,
-    path.join(process.env.USERPROFILE || process.env.HOME || '', '.dsh', 'jet-hub', 'console.json'),
-    path.join(process.env.USERPROFILE || process.env.HOME || '', '.config', 'magpie', 'jet-hub-console.json'),
-  ].filter(Boolean)
-  const urls = []
-  for (const c of candidates) {
-    if (c.startsWith('http')) { urls.push(c.replace(/\/$/, '')); continue }
-    try {
-      const j = JSON.parse(read(c))
-      if (j?.url) urls.push(String(j.url).replace(/\/$/, ''))
-    } catch { /* 没有快照就走下一个候选 */ }
-  }
-  return [...new Set(urls)]
-}
-
-// 本体控制台从 18500 起向上找空位（见 src/container.mjs 的 `from: 18500`），
-// 同时允许 JET_HUB_CONSOLE_SCAN 覆盖区间（多实例并存时用）。
-function scanPrefixes() {
-  const raw = process.env.JET_HUB_CONSOLE_SCAN
-  const list = raw ? raw.split(',').map((s) => s.trim()).filter(Boolean) : null
-  if (list) return list
-  const out = []
-  for (let p = 18500; p <= 18510; p++) out.push(`http://127.0.0.1:${p}`)
-  return out
-}
-
-async function isAlive(base) {
-  try {
-    await callOne(base, 'account.list', 2_000)
-    return true
-  } catch { return false }
-}
-
-async function pickConsole() {
-  for (const u of snapshotUrls()) if (await isAlive(u)) return u
-  for (const u of scanPrefixes()) if (await isAlive(u)) return u
-  return null
-}
-
-if (!PROBE) {
-  console.log('  探活未启用（默认关：全量网络往返不该绑在每次单测里）。'
-    + '要跑可调用性断言：加 --probe / JET_HUB_PROBE=1，或跑 scripts/test-all.mjs --all。')
-} else {
-  const t0 = Date.now()
-  const base = await pickConsole()
-  if (!base) {
-    console.log('  NOT RUN：找不到活的控制台（快照过期且 18500-18510 都不通；'
-      + '需要 magpie 在跑，或设 JET_HUB_CONSOLE / JET_HUB_CONSOLE_SCAN）')
-  } else {
-    const snapshots = snapshotUrls()
-    const stale = snapshots.filter((u) => u !== base)
-    console.log(`  控制台探活: ${base}${stale.length ? `（快照里的 ${stale.join(', ')} 已失效，已改扫端口）` : ''}`
-      + `（并发 ${CONCURRENCY}，单请求超时 ${REQUEST_TIMEOUT} ms）`)
-    const probeAll = methods.filter((m) => !SIDE_EFFECTS.has(m))
-    callable.skipped = methods.filter((m) => SIDE_EFFECTS.has(m))
-    // 静默基线：先等 2s 看内容自己会不会变（并发写方若真在改内容，这里先暴露），
-    // 避免把「别人的改动」记到探活头上。
-    const quiet0 = fingerprint()
-    await sleep(2000)
-    const quiet1 = fingerprint()
-    if (quiet0 !== quiet1) console.log('  ⚠ 静默期内容就变了：有并发写方在改这些文件，下面的副作用判定可能归错帐')
-    const before = fingerprint()
-    // 阶段一：并发扫描，只负责「能调通」——unknown method / 请求异常。
-    // 副作用**不在这里判**（并发下整体前后比对归不了因，见文件头）。
-    await pool(probeAll, CONCURRENCY, async (m) => {
-      try {
-        const text = await callOne(base, m)
-        callable.checked += 1
-        if (text.includes('unknown method:')) callable.unknown.push(m)
-      } catch (e) {
-        // 超时/连接错误不算 unknown，但要计入「探活失败」并判红 —— 别让它伪装成通过
-        callable.errors.push(`${m}（${e?.name ?? e}）`)
-      }
-    })
-    const after = fingerprint()
-    // 阶段二：副作用归因。阶段一真的改了内容才进（正常情况下永远不进）。
-    // 串行、逐方法：先等一个内容稳定的窗口，调一次，再比对；同一方法**两次独立
-    // 命中**才坐实 —— 单次命中很容易被「恰好此时别的写方落盘」冒充。
-    const mutated = after !== before
-    let confirmed = []
-    const noise = []
-    let ctlHits = 0
-
-    // 对照组：**不调用任何方法**，只走一遍和归因完全相同的「等静默窗口 → 等 400ms → 比对」。
-    // 为什么必须有：多实例 + UI 轮询会持续重写这些文件，若基线噪声不为零，
-    // 「同一方法两次命中」的判据本身就有假阳性率 —— 69 个嫌疑 × 2 轮里
-    // 总会撞上一个。实测（2026-10-28 14:1x）：首跑把 `model.setDisabled` 判成
-    // 「坐实 1」，而它空载荷直接 `bad-request: provider 与 modelId 必填`、
-    // 6/6 次隔离复验一次都没改内容（`.tmp-probe-setdisabled.cjs`）。
-    // 那一次整段归因跑了 144 秒（正常探活 6 秒），时间几乎全花在等静默窗口上。
-    const controlRounds = 3
-    const controlHits = async () => {
-      let hits = 0
-      let quietable = 0
-      for (let r = 0; r < controlRounds; r++) {
-        let quiet = ''
-        for (let i = 0; i < 10; i++) {
-          const a = fingerprint()
-          await sleep(500)
-          if (fingerprint() === a) { quiet = a; break }
-        }
-        if (!quiet) continue
-        quietable += 1
-        await sleep(400) // 与归因里「调用后等待」等长，不加调用
-        if (fingerprint() !== quiet) hits += 1
-      }
-      return { hits, quietable }
-    }
-
-    if (mutated) {
-      const ctl = await controlHits()
-      ctlHits = ctl.hits
-      console.log(`  归因对照组（不调用任何方法，同样的等待协议 ${controlRounds} 轮）：`
-        + `${ctl.hits}/${ctl.quietable} 次内容自己变了`)
-      if (ctl.hits > 0) {
-        // 基线噪声非零 ⇒ 这套归因在本环境下没有分辨力，直接放弃归因、判为外部写方。
-        // 不做 69 个方法的串行复验（那要 2 分钟以上，且结论不可信）。
-        console.log('  ⇒ 基线噪声非零，本轮放弃副作用归因（判为外部并发写方，不判任何方法有副作用）')
-      } else {
-        console.log('  ⚠ 探活期间状态文件内容变了，进入隔离复验（串行，逐个方法等静默窗口、两次命中才算）')
-        const suspects = probeAll
-        for (const m of suspects) {
-          let hits = 0
-          let unattributed = false
-          for (let round = 0; round < 2 && hits < 2; round++) {
-            let quiet = ''
-            for (let i = 0; i < 10; i++) { // 最多等 5s 找一个内容稳定的窗口
-              const a = fingerprint()
-              await sleep(500)
-              if (fingerprint() === a) { quiet = a; break }
-            }
-            if (!quiet) { unattributed = true; break }
-            await callOne(base, m).catch(() => {})
-            await sleep(400)
-            if (fingerprint() !== quiet) hits += 1
-          }
-          if (hits >= 2) confirmed.push(m)
-          else noise.push(unattributed ? `${m}（等不到静默窗口，无法归因）` : m)
-        }
-        console.log(`  副作用归因：嫌疑 ${suspects.length}，坐实 ${confirmed.length}，判为并发写方噪声 ${noise.length}`
-          + (noise.length ? `（噪声: ${noise.join(', ')}）` : ''))
-      }
-    }
-    const missing = confirmed.filter((m) => !SIDE_EFFECTS.has(m))
-    ok(missing.length === 0,
-      missing.length === 0
-        ? (mutated
-          ? (confirmed.length === 0
-            ? `探活后状态文件内容变了，但归因没坐实任何单个方法（对照组命中 ${ctlHits} 次，69 个嫌疑串行两轮全判噪声 ⇒ 外部并发写方）`
-            : '探活后状态文件内容变了，坐实的方法都已在 SIDE_EFFECTS 白名单里')
-          : '探活前后 state.json / permanent-locks.json / auto-checkin.json 内容未变')
-        : `这些方法的空载荷会真写用户状态：${missing.join(', ')}（需补进 SIDE_EFFECTS 或给实现补「空载荷即拒绝」的闸）`)
-    ok(callable.unknown.length === 0,
-      `${callable.checked} 个方法真发请求，均未回 unknown method${callable.unknown.length ? '；异常 ' + callable.unknown.slice(0, 6).join(', ') : ''}`)
-    ok(callable.errors.length === 0,
-      `探活无请求异常/超时${callable.errors.length ? `；${callable.errors.length} 个：` + callable.errors.slice(0, 8).join(', ') : ''}`)
-    console.log(`  有副作用、按设计跳过（${callable.skipped.length}）: ${callable.skipped.map((m) => `${m}[${SIDE_EFFECTS.get(m)}]`).join(', ') || '无'}`)
-    console.log(`  探活耗时 ${Date.now() - t0} ms`)
-  }
-}
-
-// ---- 6) 换 Key 分支与 REKEY_CHANNELS 必须一一对应 ------------------------------
-// `submitRekey` 是「三元链 + 末尾 else 兜底」的写法：将来往 `REKEY_CHANNELS` 加第六家
-// 而忘了加分支，请求会静默打到兜底那家（`modelscope.setApiKey`）—— 用户换 Key 换到
-// 别的账号上，还会以为成功了。这里直接对账「通道表的键」与「函数体里的 setApiKey 字面量」。
-//
-// 注意别把这条改成「用 CH[key].method 查表」：改成查表会与第 5 节「rpc 调用点必须
-// 字面量方法名」那条重复报红（实测红 2 条，比现在更严），但这条对账会解析不到任何
-// 字面量而退化成空比对 —— 两条一起看才是完整信号。
-{
-  const src = read(CONSOLE_JS)
-  const block = src.match(/const REKEY_CHANNELS = \{([\s\S]*?)\n\}/)
-  ok(!!block, '能找到 console.js 的 REKEY_CHANNELS 定义')
-  // 键名放宽到 `[a-z][a-z0-9_-]*`：`qwen3` / `gpt5` 这类带数字的、以及带连字符的
-  // Key 型 provider 名都要被两侧同时解析出来，否则会一起静默漏检（正是这条要防的缺陷）。
-  const channelKeys = block ? [...block[1].matchAll(/^ {2}([a-z][a-z0-9_-]*): \{/gm)].map((m) => m[1]) : []
-  const fn = src.match(/async function submitRekey\([\s\S]*?\n\}/)
-  ok(!!fn, '能找到 console.js 的 submitRekey 函数')
-  const branchKeys = fn ? [...new Set([...fn[0].matchAll(/rpc\('([a-z][a-z0-9_-]*)\.setApiKey'/g)].map((m) => m[1]))] : []
-  const a = [...channelKeys].sort().join(', ')
-  const b = [...branchKeys].sort().join(', ')
-  ok(channelKeys.length > 0 && a === b,
-    `REKEY_CHANNELS 的键（${a || '空'}）与 submitRekey 的 setApiKey 分支（${b || '空'}）必须一一对应`)
-}
-
-// ── 第 8 节：vendor 本地补丁必须还在（docs/vendor.md 的 6 类 / 11 个文件）──
-//
-// 这几条补丁打在**上游编译产物**上（`vendor/lib/*.js`），而 `docs/vendor.md`
-// 的同步流程是「clone 上游 → npm install → 整片拷进 vendor/」——
-// 也就是说下次按文档重跑同步，补丁会被**整片覆盖**，而且都**静默**：
-//
-//   - gemini 常量恢复明文 ⇒ 推 GitHub 时 push protection 拦截（本地一切正常）
-//   - magicrew 两条读凭据路径回到只读 localStorage ⇒ 真机「登录成功却读不到」
-//   - backup 少了 `keepDisabledModels` ⇒ 导入备份把本机模型黑名单整片关掉
+// 这些补丁打在**上游编译产物**上（`vendor/lib/jet-hub-rpc.js`），下次按文档
+// 重跑同步会被整片覆盖且**静默**：
 //   - `jet-hub-rpc` 少了「全关即意图」⇒ magpie 弹窗保存一次写满黑名单，**死循环**
-//   - `types.d.ts` 少了 `closeProvider` 类型 ⇒ 调用方按 `.d.ts` 传参报「对象字面量只能指定已知属性」
-//
-// 前三条的历史事故在各自文件里有长注释；第四条是 2026-11-05 用户报的
-// 「模型又显示已在 JetHub 关闭」。这里把「补丁还在」钉成断言，覆盖时立刻报红
-// 而不是等用户再撞一次。
 {
   const rpc = read(RPC_JS)
   ok(/本仓改动（2026-11-05）：第三参是「\*\*目标意图\*\*」/.test(rpc),
     'vendor/lib/jet-hub-rpc.js 的「全关即意图」补丁还在（model.setDisabledMany）')
-  // ⚠️ 第三个实参必须由 `closeProvider` **决定**，**不能**写死 `true`。
-  // `writeModelsWithProviderClosed` 的第三参是三态目标意图：
-  // `true` 写入 / `false` **删除**该键 / `'keep'` **不动**该键。
-  //
-  // ⚠️ 这里必须写 `closeProvider ? true : 'keep'`，**不是** `closeProvider`：
-  // 上游把 `setAllDisabled` 改成三态之后，直接传布尔 `false` 会 `delete
-  // providerClosed[provider]` —— 把用户先前设好的「关闭供应商」意图**主动删掉**
-  // （2026-11-04 真机报障：「更新插件后停用的供应商被启用了」）。
+  // ⚠️ 第三个实参必须由 `closeProvider` **决定**，**不能**写死 `true`：
+  // 直接传布尔 `false` 会 `delete providerClosed[provider]`，把用户先前设好的
+  // 「关闭供应商」意图主动删掉（2026-11-04 真机报障）。
   ok(/writeModelsWithProviderClosed\(req\.provider, ids, closeProvider \? true : 'keep'\)/.test(rpc),
     '… 且真的调了 writeModelsWithProviderClosed(provider, ids, closeProvider ? true : \'keep\')')
   ok(/const coversAll = catalog\.complete\s*&& catalog\.ids\.length > 0\s*&& catalog\.ids\.every\(\(id\) => after\[id\] === true\)/.test(rpc),
     '… 判据用的是「写入后黑名单覆盖全量目录」（fullCatalogIds 的纯净并集，且空目录不算覆盖）')
   // 契约本身也要钉住：`closeProvider` 必须从 `req` 读、默认 `true`。
-  // 只钉上面三条的话，把 `&& closeProvider` 删掉照样全绿。
   ok(/const closeProvider = req\.closeProvider !== false;/.test(rpc),
     '… `closeProvider` 从 `req` 取、不传默认 `true`（与 setAllDisabled 同一条契约）')
 }
 
-console.log(failed === 0 ? `\n✓ RPC 口径一致：本体 ${methods.length} 个方法，控制台接 ${used.length} 个` : `\n✗ ${failed} 条失败`)
+console.log(failed === 0 ? `\n✓ RPC 口径一致：本体 ${methods.length} 个方法` : `\n✗ ${failed} 条失败`)
 process.exit(failed === 0 ? 0 : 1)

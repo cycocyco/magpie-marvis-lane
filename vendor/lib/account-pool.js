@@ -1,8 +1,6 @@
 import { credentialRef } from '@deepseek-ai/dsh-credentials';
-import { createJetHubStore, clearRejectionLayer, DEFAULT_PANEL_ENTRY, isValidResetAtMs, MAX_DATE_MS, mergeLegacyLoomyLock, sanitizeAccounts, sanitizeDisabledModels, sanitizeMinimaxXff, sanitizePanelEntry, sanitizePermanentLocks, sanitizeProviderClosed, sanitizeStrictManualOrder, withAllowed, withoutAllowed } from './jet-hub-store.js';
+import { createJetHubStore, clearRejectionLayer, DEFAULT_PANEL_ENTRY, isValidResetAtMs, MAX_DATE_MS, mergeLegacyLoomyLock, sanitizeAccounts, sanitizeDisabledModels, sanitizePanelEntry, sanitizePermanentLocks, sanitizeProviderClosed, sanitizeStrictManualOrder, withAllowed, withoutAllowed } from './jet-hub-store.js';
 import { createPermanentLockStore } from './permanent-lock-store.js';
-import { normalizeOpencodeGeneration } from './opencode-auth.js';
-import { maskProxyPassword } from './proxy-mask.js';
 // ⚠️ `model-queue.ts` **零 import**（纯函数模块，见其模块头）⇒ 不引入环。
 import { nextUtc8DayStartMs } from './model-queue.js';
 import { readTokenLedgerDayMap, utc8DayKey } from './token-ledger.js';
@@ -203,68 +201,6 @@ export function sinkAccountToProviderEnd(accounts, accountId) {
  * 两者都不可用时退化为内存态，保证不抛错。
  */
 /**
- * 把池里的代理字段读成**字符串**（**读取侧的唯一收口**）。
- *
- * ## ⚠️ 为什么必须有它（实测的真缺陷，独立于 IKLTZ2 审计发现）
- *
- * `opencodeProxy` / `geminiProxy` 都来自**用户可编辑的备份文件**，而
- * `sanitizeAccounts`（`src/jet-hub-store.ts`）用 `{ ...candidate }` 原样透传、
- * **不校验这两个字段的形状**（对照 `modelRateLimits`：那个已由 `isValidResetAtMs`
- * 加固）。于是池里可能存在 `"geminiProxy": 12345`。
- *
- * 下游 `normalizeProxy`（`src/opencode.ts`）第一句就是 `input.trim()` ⇒
- * 非字符串会在那里抛 `TypeError: raw.trim is not a function`：
- *
- * - 该账号**永久不可用**（每次请求都抛，且没有自愈路径）；
- * - 症状与「代理配错了」同形，排障者会去看代理配置，而真因是备份里的脏数据。
- *
- * 实测（本机，IKLTZ2 修复期间）：`sanitizeAccounts` 原样透传 `12345`，
- * 解析器随即抛 `raw.trim is not a function`。
- *
- * ## ⚠️ 为什么「读侧兜底」而不是「写侧过滤」
- *
- * 写侧过滤（`sanitizeAccounts` 里丢弃非法值）更彻底，但它是**全仓共享**的清洗
- * 函数，改动会影响十家 provider 的条目落库形态。本函数是**代理专属**的收口，
- * 影响面精确到两个读方法。
- *
- * ⚠️ **刻意不删键、不改盘**：读侧只保证「不崩、行为确定」—— 脏值视为「未配置」
- * （= 直连）是最保守的降级，用户仍可在面板里重新配一次把它覆盖掉。
- *
- * @param value 池字段原始值（可能是任意 JSON 值）。
- * @returns 字符串原值；非字符串（含 `undefined` / 数字 / 对象 / 数组）一律回退空串。
- */
-export function asProxyText(value) {
-    return typeof value === 'string' ? value : '';
-}
-/**
- * 写「代理已更新」日志时的**展示文本**（2026-10-25 审计 A2-02）。
- *
- * ## 为什么必须有它
- *
- * 四家 `set*Proxy` 原先都把**原始 URL** 拼进日志：
- * `` `[jet-hub] 账号 ${id} Qoder 代理 → ${proxy}` `` —— 而代理 URL 常含
- * `user:pass@host` ⇒ **口令明文进日志**，而日志是用户排障时会随手打包、
- * 粘贴进 issue、上传给别人的东西。
- *
- * 对抗审计逐家实测：opencode / gemini / minimaxintl **早已同形**，
- * qoder 只是第 4 个实例（不是本 PR 新增的机制）⇒ 四家一并修。
- *
- * ## ⚠️ 判据复用 `proxy-mask.ts`，不在这里再写一份
- *
- * 池**不能** import provider 实现（`opencode.ts` 在依赖图上层，会成环），
- * 而复制一份正则到这里就正是本仓库的红线——**同一语义两套判据**。
- * ⇒ 脱敏实现住在双方都能依赖的中立文件里。
- *
- * @param value 池字段原始值（可能是脏值 —— 备份文件原样透传）。
- * @returns 空串 → `直连`；否则脱敏后的 label（保留 scheme/user/host/port）。
- */
-export function proxyLogText(value) {
-    const raw = asProxyText(value).trim();
-    if (raw.length === 0)
-        return '直连';
-    return maskProxyPassword(raw);
-}
-/**
  * 该账号是否**被上游策略封禁**（账号级，Gitee issue IKS2MV）。
  *
  * ⚠️ 判据与 `modelRateLimits` **刻意不同**：
@@ -425,20 +361,6 @@ export class AccountPool {
      */
     providerOrderCache = [];
     /**
-     * MiniMax **国际站**绕过分流用的 `X-Forwarded-For` 值（进程内副本）。
-     *
-     * 语义与校验见 `jet-hub-store.ts` 的 `JetHubState.minimaxXff` 与
-     * `sanitizeMinimaxXff`（**同一份判据**，本文件不另写一份）。
-     *
-     * ⚠️ `undefined` / 空串 = **不附头**（行为与修复前逐字节一致）。这是刻意的
-     * 缺省：附 `X-Forwarded-For` 等于声明一个并非本机的来源 IP，不能是默认行为。
-     *
-     * ⚠️ 与 {@link providerOrderCache} 同级、**可以**住在这里：丢失本键的唯一后果
-     * 是国际站用户重新遇到 307（可逆，重填一次即可）。但它**必须**被带进
-     * `queueStoreSave` 的整体写入（否则「任何一次改账号都会静默清掉它」）。
-     */
-    minimaxXffCache;
-    /**
      * ★ **由折算观测写下的** `modelRateLimits` 标记集合（键 = `accountId\u0000modelId`）。
      *
      * ## ⚠️⚠️ 为什么必须有它（真实缺陷，两个独立审计共同命中 2026-10-12）
@@ -553,9 +475,7 @@ export class AccountPool {
             this.panelEntryCache = sanitizePanelEntry(state.panelEntry);
             // 供应商顺序同理：老文档没有该键 → 空数组（未自定义）。
             this.providerOrderCache = state.providerOrder ?? [];
-            // MiniMax 国际站 XFF 同理：老文档没有该键 → `undefined`（不附头，
-            // 与修复前行为逐字节一致）。**过一遍 sanitize**：老文档里可能有脏值。
-            this.minimaxXffCache = sanitizeMinimaxXff(state.minimaxXff);
+            // MiniMax 国际站 XFF：随裁剪移除（MiniMax 已不在本 fork）。
             // 供应商关闭意图同理：老文档没有该键 → 空表（没有任何供应商被关闭，
             // 与升级前行为一致）。**过一遍 sanitize**：老文档里可能有脏值。
             this.providerClosedCache = sanitizeProviderClosed(state.providerClosed);
@@ -668,11 +588,6 @@ export class AccountPool {
                 //    被静默清掉，重启后入口又变回默认「仅侧栏」。
                 panelEntry: this.panelEntryCache,
                 providerOrder: this.providerOrderCache,
-                // ⚠️ **必须带上本键**（同 `nativeWebSearchEnabled` 的坑）：
-                //    `write` 是整体替换语义 ⇒ 漏键会让用户设的 XFF 在**任何**一次
-                //    改账号 / 改黑名单 / 改网关 / 拖顺序时被静默清掉，
-                //    症状是「国际站明明设好了 XFF，过一阵又开始 307」。
-                minimaxXff: this.minimaxXffCache,
                 // ⚠️⚠️ **必须与上面几份取自同一时刻的快照**（`replace` 是整体替换语义）：
                 //    漏键 ⇒ 关闭意图**永不落盘**，且任何账号/黑名单写入都会把它抹掉
                 //    ⇒ 重启后供应商静默回到「已打开」（Gitee issue IKP8OF 原样复发）。
@@ -1301,40 +1216,6 @@ export class AccountPool {
         this.loaded = true;
         if (this.store.kind === 'memory') {
             this.ctx.logger?.warn?.('[jet-hub] 无持久化后端，供应商顺序仅本次会话有效');
-            return;
-        }
-        await this.queueStoreSave();
-    }
-    /**
-     * 当前设置的 MiniMax 国际站 `X-Forwarded-For` 值；`undefined` = 不附头。
-     *
-     * ⚠️ 请求侧（`minimax.ts` 的 `minimaxHeadersFor`）**必须每次现读**，不能缓存：
-     * 用户随时可能在面板里改这个设置。
-     */
-    minimaxXff() {
-        this.ensureLoaded();
-        return this.minimaxXffCache;
-    }
-    /**
-     * 设置（或清除）MiniMax 国际站的 `X-Forwarded-For` 并落盘。
-     *
-     * 传空串 / `undefined` = **清除**（不附头）。校验由 `sanitizeMinimaxXff` 统一做：
-     * 非法值（主机名、XFF 链、含换行等）**不会**被写进缓存 —— 于是「填了个坏值」
-     * 与「没填」等价，不会让请求带上一个可能触发头注入的串。
-     *
-     * ⚠️ 非法值**静默归一为 `undefined`** 而不是抛错：本设置是可选逃生口，
-     * 用户输错一个字符就报错阻断保存只会更糟。但 RPC 层会把**归一后的实际值**
-     * 回给客户端，UI 照它渲染，用户能立刻看出「没生效」。
-     */
-    async setMinimaxXff(value) {
-        this.ensureLoaded();
-        const next = sanitizeMinimaxXff(value);
-        if (this.minimaxXffCache === next)
-            return;
-        this.minimaxXffCache = next;
-        this.loaded = true;
-        if (this.store.kind === 'memory') {
-            this.ctx.logger?.warn?.('[jet-hub] 无持久化后端，MiniMax XFF 设置仅本次会话有效');
             return;
         }
         await this.queueStoreSave();
@@ -3090,232 +2971,6 @@ export class AccountPool {
         });
         if (changed)
             await this.writeAccounts(next);
-    }
-    /**
-     * 记录 TRAE 签到设备轮换代次（命中 9074 后由积分领取流程调用）。
-     *
-     * 与 {@link updateModelRateLimit} 同款：在**最新快照**上做局部合并后整体
-     * 写回，避免与并发的账号操作互相覆盖。
-     *
-     * 只接受比现值**更大**的代次，防止乱序/重复回调把代次写回小值而让同一个
-     * 被限流的设备号复活。
-     */
-    async updateTraeCheckinDeviceGeneration(accountId, generation) {
-        if (!Number.isFinite(generation) || generation <= 0)
-            return;
-        const accounts = this.readAccounts();
-        const idx = accounts.findIndex(a => a.id === accountId);
-        if (idx === -1) {
-            this.ctx.logger?.warn?.(`[jet-hub] updateTraeCheckinDeviceGeneration: 账号 ${accountId} 不在账号列表中`);
-            return;
-        }
-        const current = accounts[idx].traeCheckinDeviceGeneration ?? 0;
-        if (generation <= current)
-            return;
-        const next = [...accounts];
-        next[idx] = { ...next[idx], traeCheckinDeviceGeneration: generation };
-        await this.writeAccounts(next);
-        this.ctx.logger?.info?.(`[jet-hub] 账号 ${accountId} 签到设备代次 → ${generation}`);
-    }
-    /** 读取 TRAE 签到设备轮换代次（未设置时为 0）。 */
-    traeCheckinDeviceGenerationFor(accountId) {
-        const entry = this.readAccounts().find(a => a.id === accountId);
-        const value = entry?.traeCheckinDeviceGeneration;
-        return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0;
-    }
-    /**
-     * 设置/清除某 opencode 账号的出口代理。
-     *
-     * ⚠️ **空串是合法输入**（用户显式清除代理 → 回到「与其它无代理账号共享
-     * 本机出口」），故这里**不能**用 `if (!proxy) return` 早退，否则「清除」
-     * 按钮点了会静默无效。清除时**删键**而不是写空串，避免下游把空串误当成
-     * 「配了一个空地址」。
-     *
-     * 与 `updateModelRateLimit` 同款：在**最新快照**上做局部合并后整体写回，
-     * 避免与并发的账号操作互相覆盖。
-     */ async setOpencodeProxy(accountId, proxy) {
-        const accounts = this.readAccounts();
-        const idx = accounts.findIndex(a => a.id === accountId);
-        if (idx === -1) {
-            this.ctx.logger?.warn?.(`[jet-hub] setOpencodeProxy: 账号 ${accountId} 不在账号列表中`);
-            return;
-        }
-        const next = [...accounts];
-        const entry = { ...next[idx] };
-        if (proxy.trim().length === 0)
-            delete entry.opencodeProxy;
-        else
-            entry.opencodeProxy = proxy;
-        next[idx] = entry;
-        await this.writeAccounts(next);
-        this.ctx.logger?.info?.(`[jet-hub] 账号 ${accountId} 代理 → ${proxyLogText(proxy)}`);
-    }
-    /** 读取某 opencode 账号的代理（未设置时为空串）。 */
-    opencodeProxyFor(accountId) {
-        const entry = this.readAccounts().find(a => a.id === accountId);
-        return asProxyText(entry?.opencodeProxy);
-    }
-    /**
-     * 设置/清除某 **gemini** 账号的出口代理（Gitee issue IKLTZ2）。
-     *
-     * ⚠️ **刻意与 `setOpencodeProxy` 分开成两份实现**，理由与字段同款：两者的
-     * **语义不同**（opencode = 分份额度 / Gemini = 能不能连通）。共用一份会让
-     * 「清掉 Gemini 的代理」连带清掉 opencode 的出口配置，且日志/判据也会漂移。
-     *
-     * ⚠️ 空串是合法输入（用户显式清除 → 直连），故**不能**用 `if (!proxy) return`
-     * 早退（与 `setOpencodeProxy` 同款，见其注释）。清除时删键而非写空串。
-     */
-    async setGeminiProxy(accountId, proxy) {
-        const accounts = this.readAccounts();
-        const idx = accounts.findIndex(a => a.id === accountId);
-        if (idx === -1) {
-            this.ctx.logger?.warn?.(`[jet-hub] setGeminiProxy: 账号 ${accountId} 不在账号列表中`);
-            return;
-        }
-        const next = [...accounts];
-        const entry = { ...next[idx] };
-        if (proxy.trim().length === 0)
-            delete entry.geminiProxy;
-        else
-            entry.geminiProxy = proxy;
-        next[idx] = entry;
-        await this.writeAccounts(next);
-        this.ctx.logger?.info?.(`[jet-hub] 账号 ${accountId} Gemini 代理 → ${proxyLogText(proxy)}`);
-    }
-    /**
-     * 读取某 gemini 账号的代理（未设置时为空串 = 直连）。
-     *
-     * ⚠️ **必须过 `asProxyText`**（实测的同族缺陷，独立于 IKLTZ2 审计发现）：
-     * 该字段来自**用户可编辑的备份文件**，而 `sanitizeAccounts` 用 `{...candidate}`
-     * 原样透传、不校验形状 ⇒ 池里可能存在 `"geminiProxy": 12345`。下游
-     * `normalizeProxy` 第一句就是 `input.trim()` ⇒ 非字符串会在那里抛
-     * `TypeError: raw.trim is not a function`，该账号**永久不可用且无自愈**
-     * （症状与「代理配置坏了」同形，日志只有一句 TypeError）。
-     */
-    geminiProxyFor(accountId) {
-        const entry = this.readAccounts().find(a => a.id === accountId);
-        return asProxyText(entry?.geminiProxy);
-    }
-    /**
-     * 设置/清除某 **qoder** 账号的出口代理（真实报障 2026-10-21）。
-     *
-     * ⚠️ **刻意与另外两份分开成三份实现**，理由与字段同款：三者语义不同。
-     * Qoder 这里补的是「国际版整站被 SNI 阻断」—— 在本字段之前，用户唯一出路
-     * 是启动 DSH 前导出环境变量，而那会让中国版（本来直连 160ms）也一起去挤代理。
-     *
-     * ⚠️ 空串是合法输入（用户显式清除 → 直连），故**不能**用 `if (!proxy) return`
-     * 早退（与另两份同款，见 `setOpencodeProxy` 的注释）。清除时删键而非写空串。
-     */
-    async setQoderProxy(accountId, proxy) {
-        const accounts = this.readAccounts();
-        const idx = accounts.findIndex(a => a.id === accountId);
-        if (idx === -1) {
-            this.ctx.logger?.warn?.(`[jet-hub] setQoderProxy: 账号 ${accountId} 不在账号列表中`);
-            return;
-        }
-        const next = [...accounts];
-        const entry = { ...next[idx] };
-        if (proxy.trim().length === 0)
-            delete entry.qoderProxy;
-        else
-            entry.qoderProxy = proxy;
-        next[idx] = entry;
-        await this.writeAccounts(next);
-        this.ctx.logger?.info?.(
-        // ⚠️ **只打脱敏后的 `label`，绝不打原始 `proxy`**（2026-10-25 审计 A2-02）：
-        //    代理 URL 常含 `user:pass@host`，明文进日志等于把口令写进用户
-        //    会随手粘贴/上报的文件；而 `label` 保留 host:port 与用户名、口令打码，
-        //    排查时完全够用。
-        `[jet-hub] 账号 ${accountId} Qoder 代理 → ${proxyLogText(proxy)}`);
-    }
-    /**
-     * 设置/清除某 **minimaxintl**（MiniMax 国际站）账号的出口代理。
-     *
-     * ## 为什么它与 `setGeminiProxy` 形状逐字同构却不共用
-     *
-     * 三家的**存在理由各不相同**：
-     * - opencode = 多账号要**分份额度**（不设代理 = 共用一份配额）；
-     * - Gemini = 墙外**能不能连通**（不设代理 = 根本连不上）；
-     * - minimaxintl = 绕开**按出口 IP 国别的分流**（不设代理 = 被 307 到中国站）。
-     *
-     * 合成一份会让「清掉其中一家的代理」连带清掉别家的出口配置 —— 本仓库
-     * 已反复记录这类「同义判据两份实现」的漂移，故**字段与实现都分开**。
-     *
-     * ⚠️ 空串是合法输入（用户显式清除 → 直连），故**不能**用 `if (!proxy) return`
-     * 早退。清除时**删键**而非写空串（空串与「未设置」在 UI 上是两种状态）。
-     */
-    async setMinimaxIntlProxy(accountId, proxy) {
-        const accounts = this.readAccounts();
-        const idx = accounts.findIndex(a => a.id === accountId);
-        if (idx === -1) {
-            this.ctx.logger?.warn?.(`[jet-hub] setMinimaxIntlProxy: 账号 ${accountId} 不在账号列表中`);
-            return;
-        }
-        const next = [...accounts];
-        const entry = { ...next[idx] };
-        if (proxy.trim().length === 0)
-            delete entry.minimaxIntlProxy;
-        else
-            entry.minimaxIntlProxy = proxy;
-        next[idx] = entry;
-        await this.writeAccounts(next);
-        this.ctx.logger?.info?.(`[jet-hub] 账号 ${accountId} MiniMax 国际站代理 → ${proxyLogText(proxy)}`);
-    }
-    /**
-     * 读取某 qoder 账号的代理（未设置时为空串 = 直连）。
-     *
-     * ⚠️ **必须过 `asProxyText`**（与 `geminiProxyFor` 同因）：该字段来自
-     * **用户可编辑的备份文件**，而 `sanitizeAccounts` 用 `{...candidate}`
-     * 原样透传、不校验形状 ⇒ 池里可能存在 `"qoderProxy": 12345`。下游
-     * `normalizeProxy` 第一句就是 `input.trim()` ⇒ 非字符串会在那里抛
-     * `TypeError: raw.trim is not a function`，该账号**永久不可用且无自愈**。
-     */
-    qoderProxyFor(accountId) {
-        const entry = this.readAccounts().find(a => a.id === accountId);
-        return asProxyText(entry?.qoderProxy);
-    }
-    /**
-     * 读取某 minimaxintl 账号的代理（未设置时为空串 = 直连）。
-     *
-     * ⚠️ **必须过 `asProxyText`**（与 `geminiProxyFor` 同款实测缺陷）：该字段来自
-     * **用户可编辑的备份文件**，而 `sanitizeAccounts` 用 `{...candidate}` 原样透传、
-     * 不校验形状 ⇒ 池里可能存在 `"minimaxIntlProxy": 12345`。下游 `normalizeProxy`
-     * 第一句就是 `input.trim()` ⇒ 非字符串会在那里抛 `TypeError`，该账号
-     * **永久不可用且无自愈**（症状与「代理配置坏了」同形，日志只有一句 TypeError）。
-     */
-    minimaxIntlProxyFor(accountId) {
-        const entry = this.readAccounts().find(a => a.id === accountId);
-        return asProxyText(entry?.minimaxIntlProxy);
-    }
-    /**
-     * 记录 opencode 指纹轮换代次。
-     *
-     * ⚠️ 只接受**比现值更大**的代次：乱序/重复回调把代次写回小值会让用户
-     * 以为已轮换、实际指纹没换（TRAE 同款判据，见 `updateTraeCheckinDeviceGeneration`）。
-     */
-    async updateOpencodeFingerprintGeneration(accountId, generation) {
-        if (!Number.isFinite(generation) || generation <= 0)
-            return;
-        const accounts = this.readAccounts();
-        const idx = accounts.findIndex(a => a.id === accountId);
-        if (idx === -1) {
-            this.ctx.logger?.warn?.(`[jet-hub] updateOpencodeFingerprintGeneration: 账号 ${accountId} 不在账号列表中`);
-            return;
-        }
-        const current = accounts[idx].opencodeFingerprintGeneration ?? 0;
-        if (generation <= current)
-            return;
-        const next = [...accounts];
-        next[idx] = { ...next[idx], opencodeFingerprintGeneration: generation };
-        await this.writeAccounts(next);
-        this.ctx.logger?.info?.(`[jet-hub] 账号 ${accountId} 指纹代次 → ${generation}`);
-    }
-    /** 读取 opencode 指纹代次（未设置时为 0）。 */
-    opencodeFingerprintGenerationFor(accountId) {
-        const value = this.readAccounts().find(a => a.id === accountId)?.opencodeFingerprintGeneration;
-        // ⚠️ 归一化收敛在 `normalizeOpencodeGeneration`（唯一实现）：
-        //    槽组装那边读的是**池条目字段**，两边必须是同一判据。
-        return normalizeOpencodeGeneration(value);
     }
     /**
      * 读取当前完整状态快照（账号列表 + 模型黑名单 + Loomy 镜像字段）。

@@ -65,76 +65,24 @@ export const PROVIDER_PREFIX = 'jet-hub-'
  * `plugin-auth.json` 里，改它等于让老记录的 `metadata` 多一个孤儿键（无害）。
  */
 export const ACCOUNT_INPUT = 'dshAccount'
-/**
- * Key 型渠道「新建账号」时问用户要 API Key 的 inputs 键。
- *
- * 与 `ACCOUNT_INPUT` 分开：一个是「挑一个已有账号」，一个是「贴一把新 Key」。
- * 两条方法的 prompt 不共用键 —— 否则用户在一条方法里答过的值，会让另一条
- * 的 `ask()` 误以为已经答过而直接跳过提问。
- */
-export const KEY_INPUT = 'apiKey'
-
-/**
- * Key 输入框的占位提示，按渠道给一句「去哪拿」。
- *
- * 只是占位文案，**不参与校验** —— Key 形状校验在本体（`vendor/lib/modelscope-rpc.js`
- * 的 `KEY_PATTERN` = `^ms-[A-Za-z0-9_-]{16,}$`，`vendor/lib/opencode-rpc.js` 的
- * `^[A-Za-z0-9_.-]{20,}$`）。本插件不抄一份：抄了就会在魔搭/OpenCode 改令牌
- * 格式时把合法 Key 挡在门外，而那是用户完全无法自救的一类失败。
- */
-const KEY_PLACEHOLDER = {
-  modelscope: 'ms-…（在 https://modelscope.cn/my/myaccesstoken 生成）',
-  opencode: '20 位以上的密钥串（在 https://opencode.ai/console/account 生成）',
-  qiniu: '七牛云的 API Key（在 https://portal.qiniu.com/ai-inference/api-key 生成）',
-}
 
 /** 列表里显示的供应商名。 */
 export const DISPLAY_NAME = 'Jet Hub'
 
 /**
- * 本体里的 provider（顺序即页面上的顺序）。
+ * 本体里的 provider。
  *
- * ⚠️ 这里**不含** `aggregate`（聚合路由）与 `jet-hub-auto`（自动选号）这两个路由组。
- * 它们不是真渠道：没有自己的账号池、没有自己的模型目录，`account.list` /
- * `credits.balances` 一律回 `unknown provider`，在 magpie 里只能是一张永远没有
- * 账号、也永远选不了具体模型的空卡，所以不注册。
+ * ## 本 fork 的裁剪说明
  *
- * 本体内部照样用它们做择优路由，只是本插件不再把它们注册成 magpie provider ——
- * 真渠道的请求仍然由本体按到期 / 额度在池内自动挑选，行为不受影响。
- * ⚠️ 限定：magpie 直连的请求**不经过**这两个路由组（模型 id 一律是
- * `jet-hub-<provider>/<model>`，没有任何入口解析到 `aggregate/*` 或
- * `jet-hub-auto/*`）；上面那句「照样用」指的是 DSH 界面内部仍可能选到它们。
+ * 原版登记 29 家供应商、每家各生成一个 magpie provider；本 fork 只保留
+ * **腾讯 Marvis** 一家。vendor 侧的其余 28 家已整体移除，这张表只剩一行。
+ *
+ * （原版说明：`aggregate` 与 `jet-hub-auto` 两个路由组不是真渠道，从不在此注册
+ * —— 本体内部照样用它们做择优路由；magpie 直连的模型 id 一律
+ * `jet-hub-<provider>/<model>`，没有任何入口解析到路由组。）
  */
 export const DSH_PROVIDERS = [
-  'accio',
-  'astudio',
-  'autoclaw',
-  'autoclawintl',
-  'baizhi',
-  'buddy',
-  'cline',
-  'codearts',
-  'codely',
-  'gemini',
-  'lobsterai',
-  'loomy',
-  'magicrew',
-  'magicrewintl',
   'marvis',
-  'minimax',
-  'minimaxintl',
-  'modelscope',
-  'monkeycode',
-  'monkeycodeintl',
-  'officeace',
-  'opencode',
-  'qiniu',
-  'qoder',
-  'qodercn',
-  'raccoon',
-  'trae',
-  'workbuddy',
-  'zcode',
 ]
 
 /**
@@ -142,39 +90,8 @@ export const DSH_PROVIDERS = [
  * 没登记的退回原始 id（宁可显示 `foo` 也别显示空白）。
  */
 const NAMES = {
-  accio: 'Accio (阿里)',
-  astudio: 'AStudio (讯飞)',
-  autoclaw: 'AutoClaw (智谱)',
-  autoclawintl: 'AutoClaw (国际版)',
-  baizhi: '百智云 (Baizhi)',
-  buddy: 'CodeBuddy (腾讯)',
-  cline: 'Cline (开源)',
-  codearts: 'CodeArts (华为云)',
-  codely: 'Codely (Unity 团结引擎)',
-  gemini: 'Gemini Code Assist (谷歌)',
-  lobsterai: 'LobsterAI (有道)',
-  loomy: 'Loomy (讯飞)',
-  magicrew: '超级麦吉 (MagiCrew)',
-  // 上游 `displayName` 就叫 `MagiCrew`；加「（国际版）」是为了在列表里与国内站区分。
-  magicrewintl: 'MagiCrew (国际版)',
-  // 2026-11-09 上游新增（腾讯 Marvis）。上游 `label` / `displayName` 都是「腾讯 Marvis」。
+  // 上游 `label` / `displayName` 都是「腾讯 Marvis」。
   marvis: '腾讯 Marvis',
-  minimax: 'MiniMax Code (中国版)',
-  minimaxintl: 'MiniMax Code (国际版)',
-  modelscope: 'ModelScope (魔搭)',
-  monkeycode: 'MonkeyCode',
-  // 上游 `displayName` 就叫 `MonkeyCode国际站`；这里统一成「英文名 + 括注中文性质」的写法。
-  monkeycodeintl: 'MonkeyCode (国际站)',
-  // 上游 `displayName` 只有英文；括注补的是中文名/性质，让搜中文的人也找得到。
-  officeace: 'OfficeAce (果办)',
-  opencode: 'OpenCode (开源)',
-  qiniu: 'Qiniu (七牛云)',
-  qoder: 'Qoder (国际版)',
-  qodercn: 'Qoder (中国版)',
-  raccoon: 'Raccoon (商汤)',
-  trae: 'TRAE (字节)',
-  workbuddy: 'WorkBuddy (国际版)',
-  zcode: 'ZCode (智谱)',
 }
 
 /** 本体 provider → magpie provider id。 */
@@ -203,41 +120,10 @@ const PLACEHOLDER_BASE = 'https://jet-hub.invalid/v1'
  * 键是全 id `<provider>/<model>`，按 provider 过滤。
  */
 const FALLBACK_MODELS = {
-  'workbuddy/deepseek-v4.1-flash': { name: 'WorkBuddy · DeepSeek V4.1 Flash' },
-  'qoder/qfmodel': { name: 'Qoder · qfmodel' },
-  'qodercn/dfmodel': { name: 'Qoder CN · dfmodel' },
-  'zcode/GLM-5.3': { name: 'ZCode · GLM-5.3' },
-  'codearts/deepseek-v4.1-flash': { name: 'CodeArts · DeepSeek V4.1 Flash' },
-  'buddy/deepseek-v4.1-flash': { name: 'Buddy · DeepSeek V4.1 Flash' },
-  'trae/deepseek-v4.1-flash': { name: 'Trae · DeepSeek V4.1 Flash' },
-  'autoclaw/zai_glm-5.3-flash': { name: 'AutoClaw · GLM-5.3 Flash' },
-  'loomy/DeepSeek-V4.1-Flash': { name: 'Loomy · DeepSeek V4.1 Flash' },
-  'lobsterai/deepseek-v4-flash': { name: 'LobsterAI · DeepSeek V4 Flash' },
-  'officeace/deepseek-v4.1-flash': { name: 'OfficeAce · DeepSeek V4.1 Flash' },
-  'astudio/xopdsv4flash0731in': { name: 'AStudio · DeepSeek V4 Flash' },
-  'modelscope/deepseek-ai/DeepSeek-V4.1-Flash': { name: 'ModelScope · DeepSeek V4.1 Flash' },
-  'raccoon/sn-deepseek-v4-1-flash-1017': { name: 'Raccoon · DeepSeek V4.1 Flash' },
-  'opencode/deepseek-v4.1-flash-free': { name: 'OpenCode · DeepSeek V4.1 Flash (free)' },
-  'cline/cline-pass/deepseek-v4.1-flash': { name: 'Cline · DeepSeek V4.1 Flash' },
-  'minimaxintl/MiniMax-M3': { name: 'MiniMax 国际 · M3' },
-  'minimax/MiniMax-M2.7-highspeed': { name: 'MiniMax · M2.7 Highspeed' },
-  'autoclawintl/zai_glm-5.3-flash': { name: 'AutoClaw 国际 · GLM-5.3 Flash' },
-  'gemini/gemini-3.8-flash': { name: 'Gemini · 3.8 Flash' },
-  'accio/glm-5-3-flash': { name: 'Accio · GLM-5.3 Flash' },
-  'codely/codely-flash': { name: 'Codely · Flash' },
-  'magicrew/deepseek-v4.1-flash': { name: 'Magicrew · DeepSeek V4.1 Flash' },
-  'magicrewintl/deepseek-v4.1-flash': { name: 'MagiCrew 国际 · DeepSeek V4.1 Flash' },
-  // 2026-11-09 上游新增（腾讯 Marvis）。上游**没有**模型目录端点（9 条候选全 404），
-  // 目录只能静态兜底，且只有 `main-auto` 一个槽位（服务端自动路由）。真实模型 id
+  // 上游**没有**模型目录端点（9 条候选全 404），目录只能静态兜底，且只有
+  // `main-auto` 一个槽位（服务端自动路由）。真实模型 id
   // （`deepseek-v4-1-flash-261017`）不能直传 —— 上游回 400「无效模型id」。
   'marvis/main-auto': { name: 'Marvis · Auto' },
-  'qiniu/qwen3-max': { name: 'Qiniu · Qwen3 Max' },
-  // 2026-11-04 上游新增三家。百智云目录走远端（45 条）+ 内置兜底；MonkeyCode
-  // 两站的网关 `GET /v1/models` 恒 405，目录**只能是**内置常量，故这里的 id
-  // 与 `src/monkeycode-product.ts` 的 `MONKEYCODE_GATEWAY_MODELS` 同形。
-  'baizhi/deepseek-v4-flash': { name: '百智云 · DeepSeek V4 Flash' },
-  'monkeycode/monkeycode-basic/deepseek-flash': { name: 'MonkeyCode · DeepSeek Flash (basic)' },
-  'monkeycodeintl/monkeycode-basic/deepseek-flash': { name: 'MonkeyCode 国际 · DeepSeek Flash (basic)' },
 }
 
 /** DSH 家目录（凭据所在处）。可用插件 options 的 `home` 覆盖。 */
@@ -326,12 +212,9 @@ function fallbackFor(dshProvider) {
  * 处理，编一个 8192 却会让每次落到该成员的请求都被无端夹断。
  */
 const OUTPUT_FALLBACKS = [
-  // 不限 `$`：同族还有带后缀的变体（`deepseek-v4.1-flash-1017`、`deepseek-v4-flash-0731`、
-  // `deepseek-v4-flash-vision-exp`），它们的真实上限与主型号一致。宁可报大一点
-  // （报大只是不夹，上游自己会截），也不能报小 —— 报小就是这次的故障。
-  [/deepseek.*flash/i, 393_216],
-  // 同样不限行首：AutoClaw / Accio 的 id 是 `zai_glm-5.3-flash`、`glm-5-3-flash`。
-  [/glm-5/i, 131_072],
+  // 本 fork 只剩 marvis：唯一槽位 `main-auto` 由服务端自动路由，上游不申报
+  // 输出上限 ⇒ 这里**不编造**（省略 `limit.output`，magpie 按「未声明」处理）。
+  // 原版的两条系列兜底（deepseek / glm）随其余 28 家一并移除。
 ]
 
 /**
@@ -767,32 +650,6 @@ async function accountById(container, provider, id, log) {
  */
 
 /**
- * 本体里**没有** `account.create` 分支的三家（`unknown provider: xxx`）：
- * 都是 Key 型渠道，走各自的 `*.addAccount`，不接受 `account.create`。
- * 对它们不声明「新建账号」方法，免得用户点了才看到 `unknown provider`；
- * 它们的「新建」走 `KEY_ACCOUNT_RPC` 那条贴 Key 的路子。
- * 不能 `export`：`index.mjs` 只许导出插件工厂（多导一个就整个插件加载失败），
- * 且 `tests/t-new-account.mjs` 会把本文件切段丢进 `new Function` 求值，
- * 段内出现 `export` 直接 SyntaxError。测试侧从源码文本里解析它。 */
-const NO_NEW_ACCOUNT = new Set(['modelscope', 'opencode', 'qiniu'])
-
-/**
- * 上游 `credits.claimAll` 里**走特例分支**的渠道 —— 它们的签到能力**不在**能力表里。
- *
- * 真源（`vendor/lib/jet-hub-rpc.js` 的 `case 'credits.claimAll'`）：
- *   · `if (isQoderFamily(req.provider))` —— qoder / qodercn 走 `claimQoderDailyCheckin`
- *     （国际版还要按账号取出口代理），表里**刻意**没有它们；
- *   · `if (req.provider === ZCODE.id)` —— zcode 走 `claimDailyFor`（每个 plan 现产 captcha），
- *     同样不在表里。
- * 其余渠道才是「表里有 `impl.claim` 才算支持」。
- *
- * ⚠️ 这三个 id 是**照抄**上游分支条件的（不是抄一份签到能力名单）—— 上游把某家
- * 挪进/挪出特例分支时这里会失真，所以 `tests/t-checkin.mjs` 有一条守卫：
- * 如果这三家**开始**在 vendor 表里出现 `claim`，测试会红，提示把这行删掉。
- */
-const SPECIAL_CLAIM_PROVIDERS = new Set(['qoder', 'qodercn', 'zcode'])
-
-/**
  * 上游的积分能力表（构造一次即可：里面全是配置与函数引用，不联网、不读盘）。
  *
  * `createProviderCredits({})` 的入参是**可选注入**（MiniMax 国际站的按账号代理等），
@@ -827,7 +684,6 @@ function creditsTable() {
  * 判据直接问上游的能力表，不维护第二份名单。
  */
 function canCheckin(dshProvider) {
-  if (SPECIAL_CLAIM_PROVIDERS.has(dshProvider)) return true
   let table
   try {
     // ⚠️ `try` 只包**构造表**这一步。`creditsOf()` 也包进来的话，
@@ -849,65 +705,6 @@ function canCheckin(dshProvider) {
   }
   return typeof creditsOf(table, dshProvider)?.claim === 'function'
 }
-
-/**
- * Key 型渠道「贴 Key 建号」的本体 RPC —— **上游 UI 就是这么建的**。
- *
- * 上游客户端（`vendor/lib/client/jet-hub.js` 的 `submitOpencodeEntry`）对这两家
- * 弹一个输入框、粘贴 Key、提交到下面这个方法：
- *   · `modelscope.addAccount` —— `{ apiKey, nickname? }`；
- *   · `opencode.addAccount` —— `{ apiKey, nickname? }`。
- *
- * 两家都**按 Key 尾段派生账号 id**（同一把 Key 反复贴只会落到同一条），所以这里
- * 不需要自己去重。形状校验也由本体做。
- *
- * ⚠️ 两家的 `existed` 语义**不一样**：modelscope 命中同 id 直接回 `existed: true`，
- * opencode 在同 id 但凭据读不出来（坏槽）时会覆盖写并回 `existed: false`。
- * 所以插件侧**不把它写进 metadata**（写了反而语义相反）。
- *
- * ⚠️ 值里带 `provider` 是为了让测试能从源码文本里解析出「哪几家是 Key 型」，
- * 不必在测试里再抄一份名单。
- */
-const KEY_ACCOUNT_RPC = new Map([
-  ['modelscope', 'modelscope.addAccount'],
-  ['opencode', 'opencode.addAccount'],
-  ['qiniu', 'qiniu.addAccount'],
-])
-
-/**
- * 超级麦吉两站（`magicrew` 国内 / `magicrewintl` 国际）`account.create` 要走的 `mode`，按顺序试。
- *
- * 这一家的 `account.create` **必须**带 `mode`，不带会被本体直接拒：
- * `'超级麦吉请用「从本机浏览器导入」或「网页登录」，不支持手机号密码登录'`
- * （`vendor/lib/jet-hub-rpc.js` 的 `case 'account.create'` 里 magicrew 兜底分支）。
- *
- * 第一条腿 `browser` —— 本体登记占位条目后**自己**开一个一次性独立 profile 的
- *    可见窗口等你登录（不是 `--incognito`：`vendor/lib/chromium-session.js` 只传
- *    `--user-data-dir`），立刻返回 `{ accountId, loginUrl: '' }`；进度由
- *    `login.poll` 经 `magicrewBrowserLoginInFlight` 报终态。→ 这才是「新建账号」。
- * 第二条腿 `local-browser` —— 读本机 Edge/Chrome 里已登录 `www.letsmagic.cn` 的
- *    登录态（leveldb，只读不碰 cookie）：毫秒级、不开窗、按 **jwt 指纹**幂等判重，
- *    同一账号反复导入只会刷新那一条、不会变出多张卡。读不到时本体回
- *    `ok: false`（不是抛错），`container.rpc()` 会把它转成一句人话错误。
- *    → 它是「认一个已经登过的号」，不是新建。
- *
- * 顺序是 `browser` 在前、`local-browser` 在后（2026-11-02 改）。理由：`local-browser`
- * 从本机浏览器**导入已有登录态**，它不是「新建账号」而是「认一个已经登过的号」——
- * 放在第一位会让用户在 magpie 里点「新建」时永远只捞到本机那个老号（还可能凭空
- * 多一张别人的卡），新号根本建不出来。`browser` 才是真开一个窗口让用户登新号。
- *
- * `local-browser` 的兜底面比看上去窄得多（2026-11-02 审查实证）：`browser` 是
- * 「先返回、后开窗」—— 它把真正的 `loginViaBrowser()` 塞进一个**不 await** 的
- * 后台 IIFE，自己立刻 `return { ok: true, value: { accountId, loginUrl: '' } }`。
- * 所以本机没有浏览器时 `account.create` **照样返回 ok**，`BrowserDeploymentError`
- * 只在后台被收成 `login.poll` 的终态错误。⇒ `local-browser` 真正可达的条件只有
- * 「`account.create` 这个 RPC 本身没给出可用结果」：账号池写不进去 / RPC 超时 /
- * 容器异常 / 返回体里 `accountId` 是空串（`startNewAccount` 会当场抛）。
- *
- * 为什么不把它做成「开窗失败再退回导入」的真兜底：导入认回的是一个旧号（还可能是
- * 别人的卡），用户点的是「新建」，拿回旧号比看到一句「开窗失败」更糟。
- */
-const MAGICREW_CREATE_MODES = ['browser', 'local-browser']
 
 /** 轮询 `login.poll` 的间隔（本体登录流程最短也要一两秒，2 秒够用且不吵）。 */
 const LOGIN_POLL_MS = 2_000
@@ -1014,19 +811,22 @@ async function withRpcDeadline(container, method, payload, ms, what) {
 }
 
 /**
- * 让本体起一个登录流程，拿到「登录页地址 + 占位账号 id」。
+ * 让本体起一个登录流程，拿到「占位账号 id」。
  *
  * 本体是**两步式**：先同步写好一条占位账号（无凭据、`nickname === id`、
- * `refreshable: false`）再返回 `loginUrl`，登录成功后由后台流程回填昵称与
- * 有效期。所以这里返回的 `accountId` 此时还只是个占位，不能当成「已登录」。
+ * `refreshable: false`）再返回，登录成功后由后台流程回填昵称与有效期。
+ *
+ * ⚠️ marvis 的 `account.create` **必须带 `mode: 'browser'`**：`MarvisAuth` 只有
+ * `loginViaBrowser`、没有通用 `startLogin`，不带 mode 会落到通用分支而失败。
+ * `browser` 腿是「先返回、后开窗」—— 本体把真正的浏览器授权塞进后台任务，
+ * 立刻回 `{ accountId, loginUrl: '' }`，进度由 `login.poll` 报终态 ⇒ 没有
+ * 授权页 URL 可给 magpie，按 `incognitoOpened` 收口等 `login.poll`。
  */
-async function startNewAccount(container, provider, log, mode) {
-  // 只有超级麦吉两站要带 `mode`（见下方 `MAGICREW_CREATE_MODES` 的说明），
-  // 其余 24 家多传一个未知字段会被本体忽略，但没必要冒这个险 —— 不传就不带。
+async function startNewAccount(container, provider, log) {
   const v = await withRpcDeadline(
     container,
     'account.create',
-    mode === undefined ? { provider } : { provider, mode },
+    { provider, mode: 'browser' },
     CREATE_TIMEOUT_MS,
     'account.create',
   )
@@ -1040,85 +840,11 @@ async function startNewAccount(container, provider, log, mode) {
   // 新占位已进池：下次 ask() / accountById() 必须看到它，别拿旧缓存
   accountsCache.delete(provider)
 
-  // ⚠️ 有一种**成功**返回也带空 loginUrl：本体 astudio 分支在「登录方式不是 web
-  // 且导入本机会话成功」时回 `{ accountId, loginUrl: '', reused: true }`
-  // （vendor/lib/jet-hub-rpc.js 的 `case 'account.create'` astudio 段），此时账号
-  // 条目**已登记**、凭据**已写入**，只是不需要授权页。早前这里把空 URL 一律当失败
-  // 抛错（2026-10-29 审查发现）：用户看到「新建失败」，池里却多了一个凭据齐全的
-  // 可用账号，而且没人清理它。
-  // 另两种**成功**的空 loginUrl：
-  // · 超级麦吉 `local-browser` —— 从本机浏览器导入登录态，凭据在 `create` 返回前
-  //   就已写进该账号自己的 ref（`vendor/lib/jet-hub-rpc.js` 的 `mode === 'local-browser'`
-  //   段），同样没有授权页可等 ⇒ 按 `reused` 收口。
-  // · 超级麦吉 `browser` —— 占位已登记、**本体自己在后台开窗**等用户登录，
-  //   `login.poll` 经 `magicrewBrowserLoginInFlight` 报终态 ⇒ 必须照常走
-  //   `waitForLogin()`，绝不能当 `reused`（那会把一张还没填凭据的卡报成已添加）。
-  if (loginUrl === '') {
-    if (v?.reused === true || mode === 'local-browser') {
-      log?.(`[${provider}] 已导入本机会话 ${accountId}（无需授权页）`)
-      // `incognitoOpened: true` 不是说我们开了窗：这条路没有授权页，凭据已落在
-      // 本机（本机浏览器，或 AStudio 桌面客户端的 astron-session.json）。
-      // 它的作用是**纯防御** —— 当前 magpie 版本下它与 false
-      // 渲染完全相同（`internal/gui/api.go` 的 `openError` 对空 URL 直接
-      // `return ""`，注释原话「"" when it did, or when there is no url」；
-      // `app.js` 的 `:12106`/`:12210` 两处都 `&& signing.url` 短路）。真正让用户
-      // 看到正确提示的是 `authorize()` 里按 `reused` 分叉的 instructions。
-      return { accountId, loginUrl: '', reused: true, incognitoOpened: true }
-    }
-    if (mode === 'browser') {
-      log?.(`[${provider}] 新建账号 ${accountId}，本体自己开窗等登录`)
-      return { accountId, loginUrl: '', reused: false, incognitoOpened: true }
-    }
-    throw new Error(
-      `本体没能为 ${provider} 起一个登录流程（account.create 返回 ${JSON.stringify(v).slice(0, 160)}）`,
-    )
-  }
-
-  log?.(`[${provider}] 新建账号 ${accountId}，登录页 ${loginUrl}`)
-  return { accountId, loginUrl, reused: false, incognitoOpened: v?.incognitoOpened === true }
-}
-
-/**
- * 起一个登录流程，按 provider 决定要不要按顺序试多种 `mode`。
- *
- * 除超级麦吉两站外都是单次调用（`mode === undefined`，payload 里不带这个字段）。
- * 超级麦吉两站两条腿都失败时，**报第一条腿（`browser`）的错误**，并把其余腿的
- * 原因附在括号里 —— 用户点的是「新建」，先看到那条腿为什么不行才定位得到问题。
- *
- * ⚠️ 这里的「失败」只指 `startNewAccount` 抛出来的**`account.create` RPC 错误**
- * （超时 / 账号池写失败 / 返回体里 `accountId` 缺失或为空）。**不包括**「窗口起不来」「授权
- * 被拒」：那两条发生在 vendor 的后台任务里（`mode: 'browser'` 是「先返回、后开窗」），
- * 只会变成 `login.poll` 的终态，根本不在本函数的 errors 数组里。
- */
-async function startNewAccountSmart(container, provider, log) {
-  if (provider !== 'magicrew' && provider !== 'magicrewintl') return startNewAccount(container, provider, log)
-
-  const errors = []
-  for (const mode of MAGICREW_CREATE_MODES) {
-    try {
-      return await startNewAccount(container, provider, log, mode)
-    } catch (error) {
-      errors.push({ mode, error })
-      log?.(`[${provider}] ${mode} 没成（${error?.message ?? error}），退下一个 mode`)
-    }
-  }
-  // 报**第一条**腿（browser）的错误：那才是用户点「新建」想走的路（真开窗登新号）。
-  // 这里的「失败」只指 `account.create` 这个 RPC 自己没给出可用结果（超时 /
-  // 账号池写失败 / 返回体里 `accountId` 是空串）；「窗口起不来」「授权被拒」发生在
-  // vendor 的后台任务里（`mode: 'browser'` 是「先返回、后开窗」），只会变成
-  // `login.poll` 的终态，根本不会进这个数组。`local-browser` 的失败多是
-  // 「本机浏览器里没有登录态」这种预期内的话，报它反而误导。
-  // 但把后面几条腿的原因也捎上 —— 否则用户只看到一半真相（2026-11-02 审查建议）。
-  const [first, ...rest] = errors
-  // 兜底：`MAGICREW_CREATE_MODES` 若被改成空数组，循环一次都不进，
-  // `first` 会是 `undefined` —— 那样 `throw undefined` 会丢成
-  // 「Uncaught undefined」，用户在 magpie 里只看到一句空白失败。
-  if (first === undefined) throw new Error(`${provider}：没有任何可用的新建方式`)
-  const restNote = rest.length === 0
-    ? ''
-    : `（另 ${rest.length} 条方式也不行：${rest.map((r) => `${r.mode} → ${r.error?.message ?? r.error}`).join('；')}）`
-  if (restNote === '') throw first.error ?? new Error(`${first.mode}：没有可用的新建方式`)
-  throw new Error(`${first.error?.message ?? first.error}${restNote}`)
+  // `browser` 腿的正常形状：占位已登记、本体自己在后台开窗等授权，
+  // 没有授权页 URL 可给 magpie ⇒ 照常走 `waitForLogin()`，绝不能当失败
+  //（那会把一张还没填凭据的卡报成「新建失败」，账号却真的在池里）。
+  log?.(`[${provider}] 新建账号 ${accountId}，本体在隔离浏览器里等授权`)
+  return { accountId, loginUrl, reused: false, incognitoOpened: true }
 }
 
 /**
@@ -2229,9 +1955,7 @@ export function makePlugin(dshProvider) {
            *
            * ⚠️ 这个方法**没有 `ask()`**：新建账号没得选。
            */
-          ...(NO_NEW_ACCOUNT.has(dshProvider)
-            ? []
-            : [{
+          ...[{
               type: 'oauth',
               label: `在浏览器里新建一个 ${NAMES[dshProvider] ?? dshProvider} 账号（授权后自动接入）`,
 
@@ -2253,13 +1977,8 @@ export function makePlugin(dshProvider) {
                 // 必须套上限：`start()` 允许等到 40 秒，加上 `CREATE_TIMEOUT_MS` 的
                 // 45 秒就是 85 秒，早撞穿 magpie 给 `authorize()` 的 1 分钟硬超时
                 // （2026-10-29 二审指出预算没算这一段）。12 + 45 = 57 秒，留 3 秒余量。
-                //
-                // 超级麦吉会连试两条腿，纸面上最坏是 12 + 45 + 45 = 102 秒 —— 但走不满：
-                // `local-browser` 受 vendor 自己的网络超时约束（`MAGICREW.requestTimeoutMs`
-                // 30 秒 + `MAGICREW_PROFILE_TIMEOUT_MS` 6 秒 ⇒ 最坏约 36 秒），`browser` 腿
-                // 起完后台任务**立刻**返回（不等用户登录）⇒ 现实最坏约 12 + 36 ≈ 48 秒，仍在闸内。
                 await withDeadline(container.start(), START_TIMEOUT_MS, '本体容器启动')
-                const { accountId, loginUrl, reused, incognitoOpened } = await startNewAccountSmart(
+                const { accountId, loginUrl, incognitoOpened } = await startNewAccount(
                   container,
                   dshProvider,
                   log,
@@ -2267,20 +1986,11 @@ export function makePlugin(dshProvider) {
 
                 return {
                   url: loginUrl,
-                  // magpie 会在 spinner 卡片里显示这句话
-                  // 导入那条腿没有授权页可等，说「在打开的页面里登录」会让人去找一个
-                  // 永远不出现的窗口（2026-11-02 实测用户报「无法启动浏览器」）。
-                  // ⚠️ `reused` 有两个来源，不能说成同一句话：超级麦吉走本机浏览器
-                  // 的登录态；AStudio 走桌面客户端落盘的 `astron-session.json`
-                  // （`astudio.importLocalSession`）。
-                  instructions: reused
-                    ? (dshProvider === 'astudio'
-                      ? `已经从 ${NAMES[dshProvider] ?? dshProvider} 桌面客户端的登录态回填了这个账号；`
-                        + '不需要在页面上做任何操作。'
-                      : `已经从本机浏览器读到 ${NAMES[dshProvider] ?? dshProvider} 的登录态，`
-                        + '正在回填这个账号；不需要在页面上做任何操作。')
-                    : `在打开的页面里登录要新建的 ${NAMES[dshProvider] ?? dshProvider} 账号。`
-                      + '完成后这一行会自动变成已签入，不需要回来点什么。',
+                  // magpie 会在 spinner 卡片里显示这句话。marvis 走 `browser` 腿时
+                  // loginUrl 为空（本体自己开隔离浏览器），magpie 对空 URL 不开窗
+                  //，只显示 instructions —— 所以文案要说清窗口在哪。
+                  instructions: `正在为要新建的 ${NAMES[dshProvider] ?? dshProvider} 账号打开隔离浏览器，请在弹出的窗口里完成 QQ / 微信 授权。`
+                    + '完成后这一行会自动变成已签入，不需要回来点什么。',
                   opened: incognitoOpened,
                   /**
                    * 阻塞到用户授权完成。
@@ -2291,20 +2001,13 @@ export function makePlugin(dshProvider) {
                    * 500 字显示在 magpie 里），并把占位账号收掉。
                    */
                   async callback() {
-                    // 「导入本机会话」那条路（astudio 且登录方式不是 web）：账号与凭据
-                    // 在 `account.create` 返回时就都齐了，没有授权页可等，直接收口。
-                    if (reused) {
-                      accountsCache.delete(dshProvider)
-                      log?.(`[${dshProvider}] 新账号 ${accountId} 走的是本机会话导入`)
-                    } else {
-                      const waited = await waitForLogin(container, dshProvider, accountId, log)
-                      if (!waited.ok) {
-                        // 没登成：把占位收掉（内部会先再摸一次 poll，防止误删刚登录好的号）
-                        const fate = await abandonAccount(container, dshProvider, accountId, log)
-                        // 'kept' = 收尾时发现用户其实已经登录成功了 —— 那就当成功处理，
-                        // 别让 magpie 把一条可用的账号标成失败。
-                        if (fate !== 'kept') throw new Error(waited.error)
-                      }
+                    const waited = await waitForLogin(container, dshProvider, accountId, log)
+                    if (!waited.ok) {
+                      // 没登成：把占位收掉（内部会先再摸一次 poll，防止误删刚登录好的号）
+                      const fate = await abandonAccount(container, dshProvider, accountId, log)
+                      // 'kept' = 收尾时发现用户其实已经登录成功了 —— 那就当成功处理，
+                      // 别让 magpie 把一条可用的账号标成失败。
+                      if (fate !== 'kept') throw new Error(waited.error)
                     }
 
                     const hit = await accountById(container, dshProvider, accountId, log)
@@ -2341,138 +2044,7 @@ export function makePlugin(dshProvider) {
                   },
                 }
               },
-            }]),
-
-          /**
-           * Key 型渠道的「新建」：贴一把 API Key 就建号。
-           *
-           * 为什么单独一条、而不是并进上面那个 `oauth` 方法：那条的 `authorize()`
-           * 调 `account.create`，而这三家对 `account.create` 一律回
-           * `unknown provider`（`vendor/lib/jet-hub-rpc.js` 里没有它们的分支）。
-           * 上游 UI 走的是本家的 `*.addAccount`，这里照抄同一条路。
-           *
-           * 为什么 `keyless: true`：magpie 对 `api` 型方法会**先**弹它自己的
-           * personal-key 输入框，粘完它把值放进 `key` 字段、**不会**传给
-           * `authorize(inputs)`（宿主 `save()` 只把 `inputs` 当 metadata 合并）。
-           * 而我们要把 Key 交给本体的 `*.addAccount` —— 只能自己用 `ask()` 收。
-           * `keyless: true` 让 magpie 跳过它那个框（`PluginAPIKey` 里
-           * `strings.TrimSpace(key) == ""` 时只有 keyless 才放行），于是用户看到
-           * 的是我们 `ask()` 返回的输入框，答完带 `inputs` 进 `authorize()`。
-           *
-           * ⚠️ 这条排在 `api` 那条之后：magpie 前端在 `methods.length > 1` 时弹
-           * 「怎么登录」选择器，第一项是默认选中的「接已有账号」，符合多数人的动作。
-           */
-          ...(KEY_ACCOUNT_RPC.has(dshProvider)
-            ? [{
-              type: 'api',
-              keyless: true,
-              label: `新建一个 ${NAMES[dshProvider] ?? dshProvider} 账号（粘贴 API Key）`,
-
-              /**
-               * 问用户要 API Key。
-               *
-               * 契约同上面那条的 `ask()`：返回 `{type,key,message,placeholder}`
-               * 或 null；非 null 时 magpie 渲染成输入框，答完带 `inputs[key]` 重调。
-               * 已经答过就返回 null，否则死循环。
-               *
-               * `type: 'password'` —— Key 是敏感材料，别在屏幕上明文显示
-               * （magpie 前端支持这个类型，见 `internal/plugin/providers.go` 的
-               * `Prompt.Type` 注释：「text, select, password (text typed unseen)」）。
-               */
-              async ask(inputs = {}) {
-                // ⚠️ 必须 trim 后再判空：authorize() 用的是 `String(...).trim()`，
-                // 这里若不 trim，用户粘了一串空格（复制时带上空白很常见）就会被当成
-                // 「已经答过」⇒ ask() 永远返 null、authorize() 永远抛「没有填 API Key」，
-                // 界面上再也回不到输入框，只能关掉重开（2026-11-01 二审实测）。
-                if (typeof inputs?.[KEY_INPUT] === 'string' && inputs[KEY_INPUT].trim() !== '') return null
-                return {
-                  type: 'password',
-                  key: KEY_INPUT,
-                  message: `粘贴 ${NAMES[dshProvider] ?? dshProvider} 的 API Key（在本体账号池里新建一条）`,
-                  placeholder: KEY_PLACEHOLDER[dshProvider] ?? 'API Key',
-                }
-              },
-
-              /**
-               * 把 Key 交给本体的 `*.addAccount`，拿回账号 id。
-               *
-               * 返回形状与上面那条一致（`{type:'success', key, accountId, uid,
-               * metadata}`），这样 `loader(getAuth)` 认号、`usage(getAuth)` 定位
-               * 账号、`scripts/seed-auth.mjs` 摊平都走同一套逻辑，不需要分支。
-               *
-               * `key` 里编进账号 id 的理由同上：宿主 `save()` 的 api 分支只落
-               * `{type, key, metadata}`，判重靠 `settle()` 的 secret 分支（key 字符串
-               * 相等）—— 不编 id 的话，同一个人再贴一次同一把 Key 会堆出第二条记录。
-               */
-              async authorize(inputs = {}) {
-                const apiKey = String(inputs?.[KEY_INPUT] ?? '').trim()
-                if (apiKey === '') {
-                  throw new Error(`没有填 API Key：新建 ${NAMES[dshProvider] ?? dshProvider} 账号需要先粘贴一把 Key`)
-                }
-
-                // 建号本身只是一次本地写盘，很快；但容器可能还没起 ——
-                // `rpc()` 自己会 `start()`，冷启动 20–30 秒，故套 45 秒上限
-                // （与 `CREATE_TIMEOUT_MS` 同一个预算；magpie 给 authorize() 1 分钟）。
-                const v = await withRpcDeadline(
-                  container,
-                  KEY_ACCOUNT_RPC.get(dshProvider),
-                  { apiKey },
-                  CREATE_TIMEOUT_MS,
-                  `新建 ${dshProvider} 账号`,
-                )
-                const accountId = String(v?.accountId ?? '')
-                if (accountId === '') {
-                  throw new Error(`本体没有返回账号 id（${dshProvider}.addAccount 回：${JSON.stringify(v)}）`)
-                }
-                // 新建的号一定还没被 `account.list` 那 15 秒缓存看见，不然后面
-                // `usage(getAuth)` / `ask()` 会拿旧列表，表现为「刚建的号查不到」。
-                accountsCache.delete(dshProvider)
-
-                // 建完再拉一次目录：Key 刚生效时模型列表可能刚变。
-                //
-                // ⚠️ 必须套上限：`liveAll` / `refreshFullCatalog` 内部走 `container.rpc()`，
-                // 那条路径不会自己超时（`route.fetch(req)` 没有 AbortSignal），实测上游挂住
-                // 时 authorize() 能一直不返回（二审把 refreshModels 打桩成挂 120 秒，60 秒没回）。
-                // 建号本身已经成功，目录拉不到不该把这一行签入也卡死。
-                try {
-                  await withDeadline(
-                    (async () => {
-                      await liveAll(container, log)
-                      fullModels = await container.refreshFullCatalog(DSH_PROVIDERS)
-                      writeCache(log)
-                    })(),
-                    START_TIMEOUT_MS,
-                    '建号后刷新目录',
-                  )
-                } catch { /* 目录拉不到不影响建号 */ }
-
-                return {
-                  type: 'success',
-                  key: `jet-hub-local:${dshProvider}/${accountId}`,
-                  // accountId 与上面那条 oauth 方法一样传**显示文案**（宿主 `save()` 的 api
-                  // 分支只落 `{type,key,metadata}`，这个字段会被丢弃；写文案是为了两条方法
-                  // 语义一致，别让后来人以为它真会生效）。真正的账号 id 在 metadata.dshAccountId。
-                  accountId: `${NAMES[dshProvider] ?? dshProvider} · ${accountId}`,
-                  uid: accountId,
-                  metadata: {
-                    // ⚠️ **必须**用同名键把宿主并进来的 inputs.apiKey 盖掉。
-                    // 宿主 `save()` 是 `{ ...inputs, ...result.metadata }`（inputs 在前、
-                    // metadata 在后），而我们的 inputs 就是 `{ apiKey: <明文> }` ——
-                    // 不给同名键，那把 Key 会原样落进 magpie 的 `plugin-auth.json`，
-                    // 与「只存在本体的 .credentials.yaml」的预期相反（2026-11-01 审查实测）。
-                    // 赋 undefined 而不是删键：JSON.stringify 会丢弃值为 undefined 的键，
-                    // 于是最终落盘里连 `apiKey` 这个名字都不出现。
-                    apiKey: undefined,
-                    via: 'jet-hub',
-                    provider: dshProvider,
-                    dshAccountId: accountId,
-                    // 不记 `existed`：全仓没有消费方，且 opencode 新建时回 existed:false、
-                    // 命中已有账号时回 true，写成 `existed === true` 落盘反而语义相反。
-                  },
-                }
-              },
-            }]
-            : []),
+            }],
           ],
 
         /**

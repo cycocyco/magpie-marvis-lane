@@ -8,10 +8,10 @@ process.env.JET_HUB_NO_ADDR_FILE = '1'
 import { isolate } from './_iso.mjs'
 
 const iso = isolate()
-const plugin = await mod.JetHubWorkbuddyPlugin({ client: { app: { log: (o) => console.log('  [log]', o.message) } } }, iso.options())
+const plugin = await mod.JetHubMarvisPlugin({ client: { app: { log: (o) => console.log('  [log]', o.message) } } }, iso.options())
 const cfg = {}
 await plugin.config(cfg)
-const p = cfg.provider['jet-hub-workbuddy']
+const p = cfg.provider['jet-hub-marvis']
 
 const t0 = Date.now()
 const m1 = await plugin.provider.models(p)

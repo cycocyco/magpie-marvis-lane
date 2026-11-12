@@ -29,7 +29,7 @@
  *    `getAvailableAccount`（自动选择，只认启用账号）。
  */
 import { createUserMessage, LlmError } from '@deepseek-ai/dsh-llm';
-import { creditExhaustedResetAtMs, explicitRateResetAtMs, isCreditExhausted, isRateLimited, parseRateLimitError, } from './llm-adapter.js';
+import { nextUtc8DayStartMs } from './model-queue.js';
 import { runtimeOf } from './provider-runtime.js';
 /** 探测请求的提示语（与 e2e 探针保持一致，最大化可比性）。 */
 const PROBE_PROMPT = '只回答两个字：收到';
@@ -490,5 +490,438 @@ export async function resetAllAccounts(pool, provider) {
         }
     }
     return { clearedCount, accountCount };
+}
+/**
+ * ## 本 fork 的裁剪说明
+ *
+ * 限流 / 额度耗尽判据原在 `llm-adapter.js`（codearts 主适配器，已随裁剪删除）；
+ * 本 fork 唯一消费者是本文件的探测路径，故整块**搬移**至此 —— 判据逐字未动，
+ * 「同一语义两套判据」红线照旧。
+ */
+/**
+ * CodeBuddy 系（buddy / workbuddy）表示「用量超出频率限制」的业务码。
+ *
+ * 判据优先用结构化业务码而非文案：**它与语言无关**，且不受服务端改文案影响。
+ * 国际版与国内版用的是同一个码（实测均为 6004），只有 msg 文案分中英文。
+ */
+const RATE_LIMIT_BUSINESS_CODE = 6004;
+/**
+ * 限流文案的**自然语言兜底**判据。
+ *
+ * 为什么需要兜底：并非所有限流错误都带得上结构化 code —— SSE 流内错误、
+ * 网关返回的裸文本、以及 CodeArts（华为云）的中文错误都只有文案可判。
+ *
+ * ⚠️ **中英文都必须列全**。历史缺陷（用户报障，仅国际版暴露）：此处早期只有
+ * 中文词（频率限制 / 使用量已超出 / 频率超出 / 重置），而国际版 WorkBuddy
+ * （www.workbuddy.ai）返回的是英文
+ * `usage exceeds frequency limit ... your usage will reset at <时间> UTC+8`。
+ * 结果 `isRateLimited` 恒为 false → 适配器**跳过整个账号切换分支**，直接抛出
+ * 原始 6004 JSON；错误码也因 HTTP 400 退化成 INVALID_REQUEST 而非
+ * QUOTA_EXCEEDED。国内版返回中文文案，所以该缺陷只在国际版复现。
+ *
+ * `too many requests` 是标准 OpenAI 429 措辞，一并纳入。
+ */
+const RATE_LIMIT_PATTERN = /频率限制|频率超出|使用量已超出|重置|rate.?limit|frequency limit|usage exceeds|too many requests/i;
+/**
+ * 腾讯网关「**模型饱和**」业务码（HTTP 429）。
+ *
+ * ## 它必须与额度限流（6004）分开（真实报障，2026-10-05）
+ *
+ * 用户第一次用 `buddy/space-bunny` 就报「模型 space-bunny 所有账号均受限」。
+ * 直连实测（`scripts/probe-buddy-error-catalog.mjs`）逼出了服务端原话：
+ * ```json
+ * {"code":14003,"msg":"too many requests",
+ *  "displayMsg":{"zh":"模型繁忙，请换模型或稍后重试"},
+ *  "displayTips":{"zh":"这个模型当前请求量饱和，与你的网络无关。请换个模型，或稍等一会儿再重试。"},
+ *  "actions":["SWITCH_MODEL","SUBMIT_FEEDBACK","RETRY"]}
+ * ```
+ *
+ * ⚠️ **它自己就说明了「这不是账号问题」**（注意 `actions` 里根本没有换号的选项，
+ * 只有 `SWITCH_MODEL`）。但 `isRateLimited` 对 **429 无条件返回 true** ⇒
+ * 适配器把每个账号都写上「1 小时限流」标记（报文无「将在…重置」，
+ * 故取 `RATE_LIMIT_FALLBACK_MS` 兜底）⇒ 4 个独立账号在 20 秒内**全部**被锁
+ * ⇒ 用户等到 1 小时也不能用，且**期间连别的模型都受影响**（同一个账号池）。
+ *
+ * 实测证据（同型缺陷的判据来源）：
+ * | 观测 | 结果 |
+ * |---|---|
+ * | 4 个不同腾讯 uid 的账号 | 20 秒内**全部**被标记 `space-bunny` |
+ * | 标记解禁时刻 | 全部等于「写入 + 整 1 小时」= 兜底值，**非**服务端给的时刻 |
+ * | 4 MB 输入 | 稳定逼出 `429 / 14003`（46~111 秒才返回） |
+ * | 小请求 30 发 | 全 200，但耗时 841ms ~ 216s —— 上游是**时变**背压 |
+ *
+ * ⇒ 「4 个互不相干的账号同时中招」在账号级限流下无法解释，**只能**是模型级。
+ * 与 zcode `3009 model concurrency limit exceeded` 同型（那边结论同样是
+ * 「退避重试，**不换号、不标记**」）。
+ *
+ * ⚠️ **不许把 14003 并进 `RATE_LIMIT_BUSINESS_CODE`**：两者的正确动作相反 ——
+ * 6004 是「这个账号在这模型上的额度用完了」（换号有效、必须标记）；
+ * 14003 是「这个模型此刻整体饱和」（换号**无益**、**不许**标记）。
+ */
+export const MODEL_SATURATION_BUSINESS_CODE = 14003;
+/**
+ * 「模型饱和」的**自然语言兜底**判据。
+ *
+ * 与额度限流同理：码值由服务端下发，本地产物里没有硬编码
+ * （实测搜 `14003` 在本仓库源码中零命中才敢新增），上游可能改用别的码值表达
+ * 同一语义，故需要文案兜底。
+ *
+ * ⚠️ **关键词必须窄**：`busy` / `saturated` 这种泛词若不加限定，
+ * 模型正文里恰好讨论「服务器繁忙」就会被误判。这里只认腾讯原话里的组合，
+ * 且判据本身**要求 HTTP 状态码 ≥ 400**（见 {@link isModelSaturationError}）。
+ */
+const MODEL_SATURATION_PATTERN = /模型繁忙|请求量饱和|model\s+busy|currently\s+saturated/i;
+/**
+ * 判断一次失败是否为**模型饱和**（上游背压），而非账号级额度限流。
+ *
+ * ## 为什么这个区分是**行为分叉**而不是措辞问题
+ *
+ * | | 额度限流 `6004` | 模型饱和 `14003` |
+ * |---|---|---|
+ * | 语义 | 该**账号**在该模型上额度用完 | 该**模型**此刻整体饱和 |
+ * | 换号 | **有效**（别的账号有独立额度） | **无益**（所有账号撞同一堵墙） |
+ * | 写限流标记 | **必须**（否则每轮重撞） | **绝对不许**（会把整池锁 1 小时） |
+ * | 建议 | 等解禁 / 换账号 | **换模型** / 稍后重试 |
+ *
+ * 实测 `actions` 字段本身就写着 `SWITCH_MODEL` 而**没有**换号选项 ——
+ * 服务端与我们的结论一致。
+ *
+ * ⚠️ **必须先于 `status === 429` 的无条件判定**：14003 恰恰是 429，
+ * 若先判状态码就永远走不到这里（这正是缺陷的成因，见常量注释）。
+ *
+ * @param status - HTTP 状态码。为 `undefined`（只有文案可判）时仍检查业务码；
+ *   但**文案分支要求状态码 ≥ 400** —— 否则一段正常正文里出现「模型繁忙」
+ *   就会被判成错误。
+ * @param body - 响应体（可能为空串）。
+ */
+export function isModelSaturationError(status, body) {
+    // 状态码已知且 < 400 ⇒ 这是正常响应，正文里的字样不算错误。
+    if (typeof status === 'number' && status < 400)
+        return false;
+    if (body.length === 0)
+        return false;
+    try {
+        const code = JSON.parse(body).code;
+        if (code === MODEL_SATURATION_BUSINESS_CODE
+            || code === String(MODEL_SATURATION_BUSINESS_CODE))
+            return true;
+        // ⚠️⚠️ **结构化降级：报文自带「额度限流」业务码时，一律不判模型饱和**
+        // （2026-10-17 对抗审计实测的真缺陷）。
+        //
+        // 本函数的**码值腿是权威的**，文案腿只是「上游可能改用别的码值」的兜底；
+        // 因此当报文**明确给出了另一个已知业务码**时，那才是权威信号。
+        //
+        // 实测（buddy 额度限流）：`{"code":6004,"msg":"请求量饱和，请稍后再试"}`
+        // → `MODEL_SATURATION_PATTERN` 的「请求量饱和」命中 ⇒ 判成**模型级**饱和。
+        // 后果不是措辞问题，而是**行为分叉**（见上表）：
+        // | | 额度限流 6004 | 误判成模型饱和 |
+        // |---|---|---|
+        // | 换号 | 有效 | 退化成「原账号退避重试」 |
+        // | 写限流标记 | 必须 | **绝对不许** |
+        // ⇒ 一个**额度已耗尽**的账号会被判成「换账号无效、换模型吧」，
+        // 而池里其它账号的额度是独立的、可用。
+        //
+        // ⚠️ 为什么要**降级而不是直接 return false**：6004 之外的码还可能是别的语义
+        // （上游新码 / 未知码），此时文案兜底仍有价值。故只在**已知对立法**（额度限流）
+        // 成立时降级，未知码仍走文案腿。
+        if (code === RATE_LIMIT_BUSINESS_CODE || code === String(RATE_LIMIT_BUSINESS_CODE)) {
+            return false;
+        }
+    }
+    catch {
+        // 非 JSON：交给文案兜底。
+    }
+    return MODEL_SATURATION_PATTERN.test(body);
+}
+/**
+ * 结构化判定：响应体是可解析 JSON 且 `code` 为该业务码。
+ *
+ * 不采用「全文包含 6004」的写法：`requestId` 是 UUID，任意数字子串都可能
+ * 偶然出现，文本匹配会产生假阳性；这里只认 JSON 顶层的 `code` 字段。
+ * 兼容 `"6004"`（字符串）与 `6004`（数字）两种编码。
+ */
+function hasRateLimitBusinessCode(body) {
+    try {
+        const data = JSON.parse(body);
+        const code = data.code;
+        return code === RATE_LIMIT_BUSINESS_CODE || code === String(RATE_LIMIT_BUSINESS_CODE);
+    }
+    catch {
+        // 非 JSON：交给文案兜底
+        return false;
+    }
+}
+/**
+ * 判断错误文本是否为频率限制错误。
+ *
+ * @param body - 响应体（可能为空串）
+ * @param status - HTTP 状态码（可选，但**手里有 Response 就必须传**）。为 `429`
+ *   时无条件判为限流，即使响应体为空、不含任何可识别文案。
+ *
+ * ⚠️ **`status` 判据是真实缺陷的修复，不是可选便利**：本函数原先只接收响应体，
+ * 而服务端（网关 / CDN / 限流中间件）完全可能返回**空体**的 429 —— 此时
+ * `hasRateLimitBusinessCode` 与 `RATE_LIMIT_PATTERN` **双双不命中**，函数返回
+ * `false`，于是适配器里整段「记录重置时间 + 切换账号」逻辑被**整体跳过**，
+ * 把一个本可自愈的限流直接抛给用户（表现为「账号池里明明还有可用账号，插件却
+ * 报错且不换号」）。
+ *
+ * 判据顺序刻意是「状态码优先」：429 是 HTTP 语义上**唯一**的限流信号，无需也不应
+ * 再去猜文案；下面的文案 / 业务码兜底只服务于「状态码不是 429、但正文表达了限流」
+ * 的场景（业务码 6004、SSE 流内错误、网关包装过的 200/400）。
+ *
+ * ⚠️ 反向的约束同样重要：**非 429 绝不能因为「有状态码」就判为限流** ——
+ * 404「模型不存在」这类换号无益的错误若被识别成限流，会被吞成「所有账号均受限」，
+ * 用户既看不到真实原因、插件还会白试一遍全池账号。
+ */
+export function isRateLimited(body, status) {
+    if (status === 429)
+        return true;
+    return hasRateLimitBusinessCode(body) || RATE_LIMIT_PATTERN.test(body);
+}
+/**
+ * 重置时间的两种句式（中文 / 英文），并**捕获实际时区**而非硬编码 UTC+8。
+ *
+ * 中文（buddy 国内版）："您的使用量已超出频率限制，将在 2026-09-11 18:08:17 UTC+8 重置"
+ * 英文（workbuddy 国际版）："... your usage will reset at 2026-09-17 09:09:36 UTC+8, alternatively, ..."
+ *
+ * 早期只列了中文句式，导致国际版即使判定为限流也只能走「1 小时后重试」的
+ * 兜底，丢掉服务端给出的真实重置时刻（UI 限流徽章因此显示错误时间）。
+ */
+const RESET_TIME_PATTERN = /(?:将在|reset at)\s+([\d-]+\s+[\d:]+)\s+(UTC[+-]\d+(?::\d+)?)/i;
+/**
+ * 限流文案里解析不出重置时刻时的**兜底时长**（1 小时）。
+ *
+ * 为什么需要兜底而不是「解析不到就不记标记」：网关 / CDN 返回的 429 常常既没有
+ * 重置时间、甚至**没有响应体**，而标记是 UI「限额重置」徽章与「重测 / 重置」
+ * 两条人工解禁路径的**唯一**依据 —— 静默跳过记录会让用户既看不到限流、也无从操作。
+ *
+ * ⚠️ 1 小时是**快照式**兜底（标记可被重测刷新），与 `BUDDY_POLICY_BLOCK_COOLDOWN_MS`
+ * 的 30 分钟**语义不同**（那是「安全策略拦截」的本地冷却，报文里根本没有时间字段），
+ * 也与 Qoder「按自然日 24:00」不同（那是按日的额度结算）。三者不要合并成一个常量。
+ *
+ * 导出是给 `buddy-adapter` 用的：它需要在**没拿到可解析体**时也能写出标记，
+ * 且必须与这里 `parseRateLimitError` 的兜底**同值**，否则两处口径会漂。
+ */
+export const RATE_LIMIT_FALLBACK_MS = 3_600_000;
+/**
+ * 额度耗尽的业务码（CodeBuddy 系实测值）。
+ *
+ * ⚠️ 与 {@link RATE_LIMIT_BUSINESS_CODE}（6004 = 频率限流）**不可合并**：
+ * 两者动作相同但**冷却终点相反**（见 {@link isCreditExhausted} 的表）。
+ */
+export const CREDIT_EXHAUSTED_BUSINESS_CODE = 14018;
+/**
+ * 额度耗尽的文案兜底判据（`14018` 的码值腿之外的唯一通道）。
+ *
+ * 上游原话（`www.workbuddy.ai`，HTTP 429）：
+ * `Credits exhausted. Please visit the link below to purchase add-on packs…`
+ *
+ * ⚠️ **关键词必须窄**：`insufficient` 单独出现**过宽**（见
+ * {@link isCreditExhausted} 的说明）。
+ */
+const CREDIT_EXHAUSTED_PATTERN = /credits?\s+exhausted|quota\s+exhausted|积分.{0,4}(?:不足|耗尽|用尽)|额度.{0,4}(?:不足|耗尽|用尽)|余额.{0,4}(?:不足|耗尽|用尽)/i;
+/**
+ * 额度**耗尽**（不是频率限流）的判据 —— 「钱用光了」，不是「发太快」。
+ *
+ * ## ⚠️⚠️ 为什么必须与 {@link isRateLimited} 分开（真实缺陷，Gitee IKQ6HJ）
+ *
+ * 两者的**动作完全相同**（换号 + 写冷却标记），但**冷却终点的语义相反**：
+ *
+ * | | 频率限流（6004 / 429） | 额度耗尽（14018 / Credits exhausted） |
+ * |---|---|---|
+ * | 恢复方式 | 时间到了就恢复（分钟级滚动窗口） | **等次日配额 / 充值** |
+ * | 冷却终点 | 服务端声明时刻，否则 +1h 兜底 | **UTC+8 当日 24:00** |
+ * | 写成 +1h 的后果 | 无（本来就该 1 小时） | **每小时被重新选中一次、必然再失败** |
+ *
+ * 用户侧症状（原始报障）：「面板说可以用了，一试又不行」——面板的『限额重置』
+ * 显示的是失败时刻 + 1 小时，到点后账号被重新选中，必然再失败一次，再写一条
+ * 1 小时标记，**循环往复**。而真实出路是等次日配额或充值。
+ *
+ * ## 为什么是「UTC+8 当日 24:00」而不是「+24h」
+ *
+ * 与 `loomyCooldownResetAtMs`（Gitee IKL80H 那起事故）**同一条纪律**：
+ * 额度按 UTC+8 自然日结算，用滑动 24h 会让 23:50 烧光的账号被封到**次日 23:50**
+ * ——用户 0 点后上游明明已放行、插件仍说「没到重置时间」，白等近一整天。
+ * 四家同口径的既有实现：`loomyCooldownResetAtMs` / `qoder-adapter` /
+ * `zcode-adapter` / `llm-adapter` 的 codearts 分支。
+ *
+ * ## 判据刻意**窄**
+ *
+ * 只认 `14018` 码值与 `credits exhausted` 完整短语。**不收** `insufficient` 这类
+ * 泛词 —— 上下文超长报文里的 `the context window is insufficient for this model`
+ * 会被误伤，而那是「换号无益」的另一类失败（同类误伤在
+ * `classifyLoomyFailure` / `classifyRaccoonFailure` 各踩过一次）；
+ * 中文侧同样只收「额度/积分/余额 + 不足/耗尽」的**确定性组合**。
+ *
+ * ⚠️ **本函数只看响应体，不看状态码**：14018 实测回 **HTTP 429**，但它与
+ * 频率限流共用 429 ⇒ 状态码对这一格**没有判别力**，只能靠码值/文案。
+ *
+ * @param body - 响应体（可能为空串）。
+ */
+export function isCreditExhausted(body) {
+    if (body.length === 0)
+        return false;
+    // ① 结构化业务码：只认 JSON 的 `code` 字段（与 `hasRateLimitBusinessCode` 同一
+    //    取舍 —— 全文搜 `14018` 会被 UUID 里的数字子串误命中）。
+    //
+    //    ⚠️ **必须同时认嵌套形态**：buddy 系的真实报文是
+    //    `{"error":{"data":{"code":14018,"msg":"…"}}}`（码在**第二层**），
+    //    只看顶层 `code` 会让码值腿在这家**恒不命中**、只剩英文文案腿 ——
+    //    而上游一改文案就静默失效（同族教训：`channelVerificationUpstreamId`
+    //    的注释记录了「判据认了某字段、出口却提不出该字段」的漂移）。
+    try {
+        const data = JSON.parse(body);
+        const inner = typeof data.error === 'object' && data.error !== null
+            ? data.error
+            : undefined;
+        const nested = typeof inner?.data === 'object' && inner.data !== null
+            ? inner.data
+            : undefined;
+        const codes = [data.code, inner?.code, nested?.code];
+        if (codes.some(code => code === CREDIT_EXHAUSTED_BUSINESS_CODE
+            || code === String(CREDIT_EXHAUSTED_BUSINESS_CODE))) {
+            return true;
+        }
+    }
+    catch {
+        // 非 JSON：交给文案腿。
+    }
+    // ② 文案腿（网关包装过的 200/400、纯文本错误页、以及 `errorDetail` 产物）。
+    return CREDIT_EXHAUSTED_PATTERN.test(body);
+}
+/**
+ * 额度耗尽的冷却终点：**UTC+8 当日 24:00**。
+ *
+ * 与 {@link isCreditExhausted} 配套，供 `buddy-adapter` 的换号记账分支与
+ * `account-probe` 的重测回写共用 —— **只留一份实现**，两处各算一次必然漂移
+ * （本仓库首条红线「同一语义两套判据」）。
+ *
+ * ⚠️ **必须放在本文件（共享层）而不是某个渠道的适配器里**：`account-probe.ts`
+ * 也要用它（重测时把同一时刻回传给存储），而探测层不得反向依赖某个渠道的
+ * 适配器 —— `tests/unit/account-probe-adapter.spec.ts` 普遍
+ * `vi.mock('../../src/buddy-adapter.js')`，形成依赖后那个 mock 会把该函数
+ * 一起变成 `undefined`（Gitee IKQ6HJ 报告里记录的同一处陷阱）。
+ *
+ * @param nowMs - 当前时刻（注入以便单测）。
+ */
+export function creditExhaustedResetAtMs(nowMs = Date.now()) {
+    return nextUtc8DayStartMs(nowMs);
+}
+/**
+ * 只取**服务端显式声明**的重置时刻；解析不到就返回 `undefined`（**不兜底**）。
+ *
+ * ## 为什么必须与 {@link parseRateLimitError} 并存
+ *
+ * `parseRateLimitError` 的语义是「调用方需要一个可写的标记」，故它**必然**
+ * 给出一个时刻（解析不到就 `+1h`）。而额度耗尽那一格需要区分
+ * 「服务端真给了时刻」与「它压根没给」：
+ *
+ * - 服务端给了 ⇒ **以它为准**（上游比我们更清楚何时恢复）；
+ * - 服务端没给 ⇒ 走 {@link creditExhaustedResetAtMs} 的 UTC+8 自然日，
+ *   **不是** `+1h`。
+ *
+ * 两者混用会让 14018 继续落进 1 小时兜底（正是 Gitee IKQ6HJ 的缺陷形态）。
+ *
+ * @param body - 响应体（可能为空串）。
+ * @returns 服务端声明的重置时刻（epoch ms），无则 `undefined`。
+ */
+export function explicitRateResetAtMs(body) {
+    try {
+        const data = JSON.parse(body);
+        // ⚠️ 只读 `msg`（与 `parseRateLimitError` **同源**：两句真实文案都写在该字段里）。
+        // 若哪天上游把时刻挪到别的字段，两处必须**同批**改，不能只改一处。
+        //
+        // ⚠️ 嵌套形态也要认（`{"error":{"data":{"msg":"… reset at …"}}}`）：
+        // 只读顶层会让本函数在 buddy 系的真实报文形态上恒为 `undefined` —— 那不会
+        // 报错，只会静默退回自然日终点（「服务端给了时刻却不采用」）。
+        const inner = typeof data.error === 'object' && data.error !== null
+            ? data.error
+            : undefined;
+        const nested = typeof inner?.data === 'object' && inner.data !== null
+            ? inner.data
+            : undefined;
+        const candidates = [data.msg, inner?.msg, nested?.msg];
+        for (const candidate of candidates) {
+            if (typeof candidate !== 'string')
+                continue;
+            const resetMatch = RESET_TIME_PATTERN.exec(candidate);
+            if (!resetMatch)
+                continue;
+            const resetMs = Date.parse(`${resetMatch[1]} ${resetMatch[2]}`);
+            if (!Number.isNaN(resetMs))
+                return resetMs;
+        }
+        return undefined;
+    }
+    catch {
+        // ⚠️⚠️ **非 JSON（纯文本）也必须扫一遍** —— 这不是兜底洁癖，是**真实主路径**
+        // （对抗审计实测打穿的缺陷）：
+        //
+        // `account-probe.ts` 拿到的 `message` 是**适配器抛出的 `LlmError.message`**，
+        // 而适配器早已把上游报文压平成纯文本：
+        // `workbuddy: Credits exhausted. Your quota will reset at 2099-12-31 23:59:59 UTC+8`
+        // ⇒ `JSON.parse` 必然失败 ⇒ 本函数恒 `undefined` ⇒ 探测腿永远退回自然日，
+        // 而推理腿（拿**原始报文**）能取到显式时刻 ⇒ 两条腿对同一条报文算出两个值。
+        //
+        // 实测三格（同一份 `14018 + reset at 2099` 报文）：
+        // | 输入形态 | 修前 | 修后 |
+        // |---|---|---|
+        // | 原始 JSON（推理腿） | 2099 | 2099 |
+        // | 压平后的 message（探测腿） | **undefined** ⇒ 自然日 | **2099** |
+        //
+        // ⚠️⚠️ **「正常正文凑不出这个形状」这句断言已被实测证伪，别再引用它**
+        // （对抗审计 2026-10-25 实测）：`'…配额将在 2099-12-31 23:59:59 UTC+8 重置…'`
+        // 与 `'…will reset at 2099-12-31 23:59:59 UTC+8…'` **都能凑出**且 `Date.parse`
+        // 正常解析 ⇒ 纯文本回退本身有误命中面。
+        //
+        // 当前**不可达**：两个调用点（推理腿 `buddy-adapter.ts` / 探测腿
+        // `account-probe.ts`）都在 `isCreditExhausted(body)` 门禁**之内**，
+        // 而上面那句纯限流正文实测 `isCreditExhausted = false` ⇒ 到不了扫描。
+        //
+        // ⚠️ 但这是**结构性**风险：门禁（本函数上方）与扫描（这里）分处两个函数，
+        // 将来任何人放宽/重排门禁、或给第三条腿接 `explicitRateResetAtMs`，误命中会
+        // **静默**打开。**新接调用点前先读这段**，并确认新路径同样有额度门禁。
+        const bareMatch = RESET_TIME_PATTERN.exec(body);
+        if (bareMatch !== null) {
+            const bareMs = Date.parse(`${bareMatch[1]} ${bareMatch[2]}`);
+            if (!Number.isNaN(bareMs))
+                return bareMs;
+        }
+        return undefined;
+    }
+}
+/**
+ * 从限流错误中提取重置时间；体里没有时间时返回 {@link RATE_LIMIT_FALLBACK_MS} 兜底。
+ *
+ * @param status - HTTP 状态码（可选）。为 `429` 时即使**体为空、或无任何可识别文案**
+ *   也按兜底时长返回一条，避免调用方「识别出限流却没有标记可写」（见
+ *   {@link RATE_LIMIT_FALLBACK_MS} 的说明）。
+ */
+export function parseRateLimitError(body, currentModel, status) {
+    const fallback = () => ({
+        modelId: currentModel,
+        resetTimeMs: Date.now() + RATE_LIMIT_FALLBACK_MS,
+    });
+    try {
+        const data = JSON.parse(body);
+        const msg = typeof data.msg === 'string' ? data.msg : '';
+        const resetMatch = RESET_TIME_PATTERN.exec(msg);
+        if (resetMatch) {
+            // 用捕获到的真实时区拼接（不再写死 UTC+8），Date.parse 能正确解析该写法。
+            const resetMs = Date.parse(`${resetMatch[1]} ${resetMatch[2]}`);
+            if (!Number.isNaN(resetMs)) {
+                return { modelId: currentModel, resetTimeMs: resetMs };
+            }
+        }
+        // 标准 OpenAI 429 格式，或带业务码但文案无法解析出时间
+        if (isRateLimited(body, status)) {
+            return fallback();
+        }
+        return null;
+    }
+    catch {
+        // 非 JSON（空体、纯文本、CDN 的 HTML 错误页）：只剩状态码可判。
+        return status === 429 ? fallback() : null;
+    }
 }
 //# sourceMappingURL=account-probe.js.map

@@ -5,7 +5,7 @@ import { DSH_PROVIDERS, outputLimit } from '../src/plugin.mjs'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-// ⚠️ 本文件调 29 个工厂会**真起容器**（`warmUp()` 后台跑），所以必须隔离：
+// ⚠️ 本文件调插件工厂会**真起容器**（`warmUp()` 后台跑），所以必须隔离：
 // 不隔离的话 `resolveHome(undefined)` 会退回 `homedir()`，把本体的 `DSH_HOME`
 // 直指用户真实凭据目录 —— 实测跑一次本文件，`~/.dsh/.credentials.yaml` 与
 // `jet-hub/state.json` 两个文件的哈希都变了（4 个 cline 账号的 access_token
@@ -82,7 +82,7 @@ for (const [name, fn] of fns) {
       // ⚠️ 逐家不判死：codely 上游只声明模态、不声明 context（实测），那家全 0
       // 是上游事实。所以只把「一家都没有」当失败 —— 那才是能力链路整体断了。
       const withContext = rows.filter((m) => (m?.limit?.context ?? 0) > 0).length
-      // 隔离环境里 29 家的种子都写了 meta.context，所以只要有一家的模型没带上
+      // 隔离环境里所有家的种子都写了 meta.context，所以只要有模型没带上
       // limit.context 就是 absorbMeta → modelEntry 这条链路断了。别退化成「全部缺
       // 才算红」—— 只坏一家（往往正是用户最常用那家）时那条判据不成立，等于假绿。
       if (rows.length > 0 && withContext !== rows.length) noContext.push(name)
@@ -100,22 +100,24 @@ for (const [name, fn] of fns) {
 // `content` 为空、`finish_reason=length` ⇒ 客户端报「已达到输出 token 上限」。
 //
 // 直接测兜底口径（不走目录缓存），缓存竞态不会让这条护栏失效。
+//
+// 本 fork 裁剪说明：`OUTPUT_FALLBACKS` 已随 28 家供应商一并清空 —— marvis 的
+// 唯一槽位 `main-auto` 由服务端自动路由、上游不申报输出上限 ⇒ **不编造**。
+// 所以「系列兜底」断言从「兜成真值」反转为「一律 undefined」，而「显式申报
+// 原样透传」这条与 provider 无关的逻辑必须仍然生效。
 const OUTPUT_CASES = [
   // [模型 id, 申报值, 期望值, 说明]
-  ['deepseek-flash', undefined, 393_216, 'LobsterAI 上游不申报 output'],
-  ['deepseek-v4.1-flash', undefined, 393_216, 'CodeArts 上游不申报 output'],
-  ['DeepSeek-V4.1-Flash', undefined, 393_216, 'Loomy 上游不申报 output'],
-  ['deepseek-v4.1-flash', undefined, 393_216, 'OfficeAce 上游不申报 output'],
-  ['deepseek-v4.1-flash-1017', undefined, 393_216, '同族带后缀变体'],
-  ['deepseek-v4-flash-vision-exp', undefined, 393_216, '同族带后缀变体'],
-  ['GLM-5.3', undefined, 131_072, 'GLM-5 系'],
-  ['zai_glm-5.3-flash', undefined, 131_072, 'GLM-5 系（带前缀）'],
+  ['deepseek-flash', undefined, undefined, 'deepseek 系兜底已随裁剪移除，一律不编'],
+  ['DeepSeek-V4.1-Flash', undefined, undefined, 'deepseek 系兜底已随裁剪移除，一律不编'],
+  ['GLM-5.3', undefined, undefined, 'GLM 系兜底已随裁剪移除，一律不编'],
+  ['zai_glm-5.3-flash', undefined, undefined, 'GLM 系（带前缀）兜底已随裁剪移除'],
+  ['marvis/main-auto', undefined, undefined, 'marvis main-auto 由服务端自动路由，不申报'],
   // 申报过的值必须原样保留，不能被兜底表覆盖。
-  ['deepseek-v4.1-flash', 128_000, 128_000, 'WorkBuddy 申报 128000'],
-  ['deepseek-v4.1-flash', 64_000, 64_000, 'Trae 申报 64000'],
-  ['sn-deepseek-v4-1-flash-1017', 100_000, 100_000, 'Raccoon 申报 100000'],
+  ['deepseek-v4.1-flash', 128_000, 128_000, '显式申报 128000 原样透传'],
+  ['deepseek-v4.1-flash', 64_000, 64_000, '显式申报 64000 原样透传'],
+  ['sn-deepseek-v4-1-flash-1017', 100_000, 100_000, '带前缀的显式申报原样透传'],
   // 认不出的系列：不申报（undefined），而不是编一个 8192。
-  ['qfmodel', undefined, undefined, 'Qoder qfmodel 无据可查'],
+  ['qfmodel', undefined, undefined, '无据可查'],
 ]
 for (const [id, declared, want, why] of OUTPUT_CASES) {
   const got = outputLimit(id, declared)
@@ -132,17 +134,9 @@ for (const [id, declared, want, why] of OUTPUT_CASES) {
     problems.push('modelsOfFull 又把展示名当 id 传给 modelEntry —— 系列兜底会全部落空')
   }
 }
-// 目录侧抽样：受影响的四家在真实目录里必须带上真值（目录缓存可能不含该模型，故只抽检）。
-for (const [key, want] of [
-  ['JetHubLobsteraiPlugin/deepseek-flash', 393_216],
-  ['JetHubCodeartsPlugin/deepseek-v4.1-flash', 393_216],
-  ['JetHubLoomyPlugin/DeepSeek-V4.1-Flash', 393_216],
-  ['JetHubOfficeacePlugin/deepseek-v4.1-flash', 393_216],
-]) {
-  if (!outputById.has(key)) continue
-  const got = outputById.get(key)
-  if (got !== want) problems.push(`${key}: 目录里 limit.output 应为 ${want}，实际 ${got}`)
-}
+// 目录侧抽样：裁剪后只剩 marvis，静态兜底只有 `main-auto` 且不申报 output
+//（OUTPUT_FALLBACKS 已清空）⇒ 那条「目录里必须带真值」的抽检随之失去对象。
+// 「不许编 8192」的护栏由上面的 OUTPUT_CASES 与源码级断言继续守。
 
 /**
  * ⚠️ 回归护栏（2026-10-30 上游加 magicrew 时暴露的真缺陷）：
@@ -171,7 +165,7 @@ for (const [key, want] of [
    * 下面这个常量是**绝对**判据：加减 provider 必须显式改它，改的那一刻至少得想一下
    * 到底是在加家还是掉家。
    */
-  const EXPECTED_PROVIDER_COUNT = 29
+  const EXPECTED_PROVIDER_COUNT = 1
   if (PROVIDER_IDS.length !== EXPECTED_PROVIDER_COUNT) {
     problems.push(
       `provider 家数应为 ${EXPECTED_PROVIDER_COUNT}，实际 ${PROVIDER_IDS.length}（加减 provider 时必须同步这个常量）`,
@@ -212,16 +206,14 @@ console.log('✓ 全部工厂契约一致')
 
 // ---- 真转发 ----
 //
-// ⚠️ 换过两次策略（实测记录，别改回单一渠道）：
+// ⚠️ 换过两次策略（实测记录）：
 //   1. 一开始只用 workbuddy —— 它的账号池会偶发「余额查询未能全部完成」502，
 //      测试因此红过一次，那**不是**桥接层缺陷。
-//   2. 现在按顺序试 workbuddy → codearts → trae，**任一 200 即通过**。
-//      三家都是本机已登录的真账号；全挂才说明桥接层真坏了。
-//      上游此刻能不能用属于环境事实，不该让桥接层的回归测试跟着红。
+//   2. 后来按顺序试 workbuddy → codearts → trae，任一 200 即通过。
+//   3. 本 fork 裁剪后只剩 marvis 一家，候选表自然只剩它：上游此刻能不能用属于
+//      环境事实，不该让桥接层的回归测试跟着红。
 const CANDIDATES = [
-  ['JetHubWorkbuddyPlugin', 'jet-hub-workbuddy'],
-  ['JetHubCodeartsPlugin', 'jet-hub-codearts'],
-  ['JetHubTraePlugin', 'jet-hub-trae'],
+  ['JetHubMarvisPlugin', 'jet-hub-marvis'],
 ]
 
 let ok = false
@@ -274,7 +266,7 @@ for (const [exportName, id] of CANDIDATES) {
 }
 
 if (!ok) {
-  console.log('✗ 三个渠道全挂，桥接层有问题：')
+  console.log('✗ 渠道全挂，桥接层有问题：')
   for (const f of failures) console.log('  ' + f)
   process.exit(1)
 }

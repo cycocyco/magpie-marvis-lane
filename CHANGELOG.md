@@ -9,6 +9,32 @@
 
 ---
 
+## fork：摘出 marvis 单供应商（2026-11-12）
+
+- `refactor(vendor)`: **只保留 marvis 车道，其余 28 家供应商整体移除**。
+  共享引擎（账号池 / 静默续期 / 临期折算 / 聚合与 auto 路由组 / openai-gateway / store）
+  原样保留，登记点（registry / credits / expiry / onboarding / REF 前缀表 /
+  `AGGREGATE_CHANNELS` / `WIRED_EXPIRY_PROVIDERS` / wired 数组）剪成只剩 marvis。
+  兼容语义按原版保留：能力表派生、REF 前缀派生正则、`loomy` 遗留锁定字段的
+  状态文档兼容（读旧 state.json 不塌）。
+- `refactor(plugin)`: **插件层只注册 `jet-hub-marvis` 一个 provider**。
+  Key 型渠道（`NO_NEW_ACCOUNT` / `KEY_ACCOUNT_RPC`）、magicrew 双腿建号
+  （`MAGICREW_CREATE_MODES`）、签到特例名单随被删渠道一并移除；
+  新建账号改为固定 `mode: 'browser'`（`MarvisAuth` 只有 `loginViaBrowser`）。
+- `fix(vendor)`: **裁剪误删 `GATEWAY_SOURCE_KIND` / `gatewayToolResultBlock` 两个导出**（2026-11-12 测试适配阶段发现）。
+  `openai-gateway/messages.js` 剪 codearts 分支时把这两个**通用**导出一起带走了，而
+  `responses.js` 与 `messages.d.ts` 仍引用它们 ⇒ import `jet-hub-rpc.js` 的整条运行时
+  链路直接 `SyntaxError`。已按 `.d.ts` 声明与文档注释机械还原（还原处带注释标记）。
+- `fix(vendor)`: **marvis 建号必须带 `mode: 'browser'`**。`MarvisAuth` 只有
+  `loginViaBrowser`、没有通用 `startLogin`，不带 mode 会落到 `account.create` 的
+  通用分支而失败；插件侧新建账号固定走 browser 腿（先返回、后开窗，
+  `loginUrl` 恒空串，进度由 `login.poll` 报终态）。
+- `chore`: 移除本地控制台（`console/` + `src/hub-server.mjs`）、magpie 插件页
+  （`page/`）、上游快照门禁（`verify-vendor`）与失效脚本 / 用例。
+  管理全部走 magpie 自身的供应商界面。
+
+---
+
 ## 1.0.0（未发布）
 
 - `fix(plugin)`: **冷启动时后台刷新没有 in-flight 去重，最多 58 条链并发**。

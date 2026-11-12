@@ -71,7 +71,8 @@ console.log('价格表：')
   console.log(`  ${names.length} 条，格式与取值都合规（官方直营价 ${officialN} 条 / 中位数 ${names.length - officialN} 条）`)
 
   // 路由名不是型号名：`auto` 这类在目录里撞上的同名条目属于别家产品，贴过来就是编数字
-  for (const route of ['auto', 'standard', 'professional', 'ultimate']) {
+  // （本 fork 只剩 marvis：它的唯一槽位 `main-auto` 是服务端自动路由，同样不是型号名）。
+  for (const route of ['auto', 'standard', 'professional', 'ultimate', 'main-auto']) {
     ok(MODEL_PRICES[route] === undefined, `路由/档位名 ${route} 不该有价（会撞上别家同名型号）`)
   }
 }
@@ -117,7 +118,7 @@ console.log('\nmodelEntry 的 cost：')
   ok(half?.cost !== undefined && half.cost.input === 1, '只有 input 有价时仍要发 cost')
 }
 
-/* ── 3. 全量目录那条腿：真跑 29 个工厂 ── */
+/* ── 3. 全量目录那条腿：真跑工厂（本 fork 只剩 marvis 一家）── */
 console.log('\n接进 provider.models()（全量目录）：')
 {
   const fs = await import('node:fs')
@@ -129,8 +130,24 @@ console.log('\n接进 provider.models()（全量目录）：')
   fs.mkdirSync(path.join(TMP, '.dsh'), { recursive: true })
   const prevHome = process.env.DSH_HOME
   const prevState = process.env.DSH_JET_HUB_STATE_DIR
+  const prevCache = process.env.JET_HUB_MODELS_CACHE
   process.env.DSH_HOME = path.join(TMP, '.dsh')
   process.env.DSH_JET_HUB_STATE_DIR = TMP
+  // 模型缓存必须指到临时目录：`cacheFileOf()` 缺省按 homedir() 走真实
+  // `~/.config/magpie/jet-hub-models.json`，不隔离会把用户缓存改掉。
+  const cachePath = path.join(TMP, 'jet-hub-models.json')
+  process.env.JET_HUB_MODELS_CACHE = cachePath
+  // 种一份最小目录：一个**表里有价**的型号 + 一个**路由槽位**（`main-auto`，
+  // 表里刻意没价）。这样「该挂价的挂了、不该挂价的没挂」两个方向都被验到。
+  fs.writeFileSync(cachePath, JSON.stringify({
+    at: new Date().toISOString(),
+    models: ['marvis/DeepSeek-V4-Flash', 'marvis/main-auto'],
+    full: [
+      { id: 'marvis/DeepSeek-V4-Flash', name: 'Marvis · DeepSeek V4 Flash' },
+      { id: 'marvis/main-auto', name: 'Marvis · Auto' },
+    ],
+    meta: {},
+  }))
   process.env.JET_HUB_NO_ADDR_FILE = '1'
   try {
     const mod = await import('file://' + ROOT.replace(/\\/g, '/') + '/index.mjs')
@@ -156,7 +173,7 @@ console.log('\n接进 provider.models()（全量目录）：')
         const c = entry.cost
         const got = [c.input, c.output, c.cache?.read, c.cache?.write]
         if (!got.every((n) => typeof n === 'number') || !(c.input > 0 || c.output > 0)) wrongShape += 1
-        // 表里没有价、条目却挂了 ⇒ 有人编了数字
+        // 表里没有价、条目却挂了 ⇒ 有人编了数字（`main-auto` 正是这条路）
         if (want === undefined) {
           extraCost.push(`${id}/${bare} 实=${JSON.stringify(got)}`)
           continue
@@ -179,25 +196,28 @@ console.log('\n接进 provider.models()（全量目录）：')
     else process.env.DSH_HOME = prevHome
     if (prevState === undefined) delete process.env.DSH_JET_HUB_STATE_DIR
     else process.env.DSH_JET_HUB_STATE_DIR = prevState
+    if (prevCache === undefined) delete process.env.JET_HUB_MODELS_CACHE
+    else process.env.JET_HUB_MODELS_CACHE = prevCache
     fs.rmSync(TMP, { recursive: true, force: true })
   }
 }
 
-/* ── 4. 另外两条腿：实时目录与静态兜底 ── */
+/* ── 4. 另外两条腿：实时目录与静态兜底（marvis）── */
 console.log('\n接进另外两条腿（实时目录 / 静态兜底）：')
 {
   // 实时腿（`modelsOf`）：容器刚起、全量还没拉到时走这条。
-  const liveMiss = pickModels('codearts', { live: ['codearts/standard'] })
+  // `main-auto` 是路由槽位、表里刻意没价 ⇒ 绝不能挂 cost。
+  const liveMiss = pickModels('marvis', { live: ['marvis/main-auto'] })
   ok(
-    liveMiss?.models?.standard?.cost === undefined,
-    `实时腿：表里没有 standard 却挂了 cost ${JSON.stringify(liveMiss?.models?.standard?.cost)}`,
+    liveMiss?.models?.['main-auto']?.cost === undefined,
+    `实时腿：表里没有 main-auto 却挂了 cost ${JSON.stringify(liveMiss?.models?.['main-auto']?.cost)}`,
   )
-  const liveHit = pickModels('codearts', { live: ['codearts/deepseek-v4.1-flash'] })
-  const liveCost = liveHit?.models?.['deepseek-v4.1-flash']?.cost
+  const liveHit = pickModels('marvis', { live: ['marvis/DeepSeek-V4-Flash'] })
+  const liveCost = liveHit?.models?.['DeepSeek-V4-Flash']?.cost
   ok(liveCost !== undefined, '实时腿：表里有价却没挂 cost')
   // 只断言「有 cost」不够 —— 实时腿把价打了折、或换了个数，一样会漏过去。
   // 三条腿的值必须与表逐字相等。
-  const liveWant = MODEL_PRICES['deepseek-v4.1-flash']
+  const liveWant = MODEL_PRICES['DeepSeek-V4-Flash']
   ok(
     liveCost !== undefined
       && JSON.stringify([liveCost.input, liveCost.output, liveCost.cache?.read, liveCost.cache?.write])
@@ -206,12 +226,11 @@ console.log('\n接进另外两条腿（实时目录 / 静态兜底）：')
   )
 
   // 静态兜底腿（`fallbackFor`）：两份目录都空时走这条，是最容易被漏掉的一条。
-  // 只测一家不够：每家的静态兜底恰好只有 1 个模型，
-  // 只选一家的话「表里没价却挂了 cost」这条断言恒为空。
-  // 注意：三家的模型名互不相同，合并不会互相覆盖。
-  const fb = Object.assign({}, ...['codearts', 'loomy', 'qoder'].map((p) => fallbackFor(p)))
+  // 本 fork 只剩 marvis，静态兜底只有 `main-auto` 一个槽位（服务端自动路由）。
+  const fb = fallbackFor('marvis')
   const fbNames = Object.keys(fb)
   ok(fbNames.length > 0, `静态兜底有模型（实际 ${fbNames.length}）`)
+  ok(fbNames.includes('main-auto'), `静态兜底里有 main-auto 槽位（实际 ${fbNames.join(', ')}）`)
   const fbMissing = fbNames.filter((n) => MODEL_PRICES[n] !== undefined && fb[n].cost === undefined)
   const fbExtra = fbNames.filter((n) => MODEL_PRICES[n] === undefined && fb[n].cost !== undefined)
   ok(fbMissing.length === 0, `静态兜底：表里有价却没挂 cost：${fbMissing.join(', ')}`)

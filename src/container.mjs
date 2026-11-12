@@ -17,11 +17,10 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { Context } from '@deepseek-ai/cordis'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { FileCredentialProvider, CRED_BASENAME, parseRefs, scanRefKeys } from './credentials.mjs'
 import { ConnectionSeam } from './connection.mjs'
-import { startHubServer } from './hub-server.mjs'
 import { JetHubAttachmentStore } from './attachments.mjs'
 import { chatCompletion, modelsPayload, llmReady, jsonResponse, errorResponse, openAiEfforts } from './llm-bridge.mjs'
 
@@ -35,9 +34,13 @@ const HAS_REFS_HEAD = /^refs:\s*(?:\{\s*\})?\s*(?:#.*)?$/m
  * 「refreshable 是兑出来的、expiresAt 是真日期」这两条前提。
  * 前提不成立的家必须列在这里，否则判据恒真、把能用的号就地判死。
  *
- * 当前只有 loomy —— 具体理由见 `isDeadAccount` 内注释。
+ * ## 本 fork 的裁剪说明
+ *
+ * 原版在此登记 loomy（它的 `refreshable` 是诚实标记、`expiresAt` 是本地推算的
+ * 假日期，判据对它恒真）。本 fork 只剩 marvis（OAuth 凭据，`refreshable` 真实、
+ * `expiresAt` 来自上游），名单为空 —— 保留集合结构，不改调用方形状。
  */
-const DEAD_JUDGE_UNTRUSTED = new Set(['loomy'])
+const DEAD_JUDGE_UNTRUSTED = new Set()
 
 /**
  * 「本次请求钉住哪个账号」的请求作用域。
@@ -110,7 +113,6 @@ export class JetHubContainer {
     this.ctx = undefined
     this.ready = undefined
     this.seam = undefined
-    this.console = undefined
     this.version = undefined
     this.models = []      // 最近一次拉到的模型 id（不带 provider 前缀）
     this.ownerOf = new Map() // modelId -> provider id
@@ -366,57 +368,21 @@ export class JetHubContainer {
 
     this._filterDeadAccounts(ctx)
 
-    // 6) 本地控制台：对外暴露本体注册的管理 API（/api/jet-hub）与 console/ 界面。
-    //    放在网关就绪之后，`/__meta` 里的 provider 目录才是拉全的。
+    // 6) 管理路由接缝自检（本 fork 已摘掉本地控制台，但接缝本身必须健在：
+    //    它是「vendor 的 RPC 注册链路没变」的探针，静默失效比抛错危险）。
     this.seam = ctx.get('connection')
     if (this.seam === undefined || this.seam.routes.size === 0) {
       // 走到这里说明本体的 RPC 注册链路变了（版本升级），必须暴露出来而不是静默降级。
       throw new Error(
-        'magpie-jet-hub: 本体没有注册任何 Jet Hub 管理路由（connection 接缝失效）。' +
-          '管理功能会全部不可用，请检查 vendor/lib/jet-hub-rpc.js 的 registerJetHubRpc 是否仍在用 ctx.get("connection").fetch.register。',
+        'magpie-marvis: 本体没有注册任何 Jet Hub 管理路由（connection 接缝失效）。' +
+          '请检查 vendor/lib/jet-hub-rpc.js 的 registerJetHubRpc 是否仍在用 ctx.get("connection").fetch.register。',
       )
     }
-    this.console = await startHubServer({
-      seam: this.seam,
-      log: this.log,
-      meta: () => this.meta(),
-      // 控制台端口从 18500 起向上找空位（直连后已经没有内部网关要分端口了，
-      // 这段历史注释留在这里是为了说明 18500 这个起点的来历）。
-      from: 18500,
-    })
-    this.log(`控制台就绪 ${this.console.url}｜管理路由 ${this.seam.routes.size} 条：${this.seam.list().join(' | ')}`)
+    this.log(`管理路由 ${this.seam.routes.size} 条：${this.seam.list().join(' | ')}`)
     // ⚠️ 不在这里补拉全量目录：`refreshFullCatalog()` 第一行就是 `await this.start()`，
     // 而此刻 `this.ready` 正是**当前这个** promise —— 会自己等自己，死锁。
     // 全量目录由 plugin.mjs 的 refreshInBackground 在 start 完成后填。
-    // 落一份地址文件：magpie 的插件页 CSP 是 connect-src 'none'，页面拿不到端口，
-    // 只能由用户/文档从这里取；同时便于 `magpie plugin list` 之后排查。
-    //
-    // ⚠️ **两条件缺一不可**（2026-10-28 事故：文件被测试进程写成 18502，而 18502
-    // 上无人监听，用户照它访问连不上）。
-    //
-    //  ① `JET_HUB_NO_ADDR_FILE=1` 时**完全不写**：测试起的临时容器跑完就退，
-    //     它绝不是这个文件该记的所有者；让测试闭嘴是根上的修法。
-    //  ② 只有拿到**首发端口**（`from`，即 18500）时才写。向上漂移出来的 18501 /
-    //     18502 说明首发端口被别人占着，**那个人才是所有者**，它的地址更该留。
-    //     这条兜住「测试脚本忘了带开关」的情形。
-    //
-    // 代价（明写，不留暗坑）：所有者进程退出后文件仍指向它，直到下次有实例
-    // 拿到 18500 才刷新。读取方（控制台页 / scripts/shot-console.cjs /
-    // t-rpc-cover 的 `snapshotUrls`）本来就都另有探活与沿区间扫描的退路。
-    const addrFileDisabled = /^(1|true|yes)$/i.test(String(process.env.JET_HUB_NO_ADDR_FILE ?? ''))
-    if (!addrFileDisabled && this.console.port === 18500) {
-      try {
-        const p = join(homedir(), '.config', 'magpie', 'jet-hub-console.json')
-        mkdirSync(dirname(p), { recursive: true })
-        writeFileSync(p, JSON.stringify({ url: this.console.url, port: this.console.port, at: new Date().toISOString() }, null, 2))
-      } catch { /* 写不了不影响服务 */ }
-    }
     return this
-  }
-
-  /** 控制台地址（未启动时 undefined）。 */
-  get consoleUrl() {
-    return this.console?.url
   }
 
   /** 给控制台 `/__meta` 用的现场快照：provider → 模型，外加网关地址。 */

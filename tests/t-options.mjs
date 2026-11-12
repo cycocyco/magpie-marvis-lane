@@ -22,8 +22,8 @@ writeFileSync(
   join(iso.root, '.config', 'magpie', 'jet-hub-models.json'),
   JSON.stringify({
     at: new Date().toISOString(),
-    models: ['workbuddy/wb-seed-live'],
-    full: [{ id: 'workbuddy/wb-seed-live', name: 'WB Seed' }],
+    models: ['marvis/mar-seed-live'],
+    full: [{ id: 'marvis/mar-seed-live', name: 'Marvis Seed' }],
     meta: {},
   }),
 )
@@ -40,7 +40,7 @@ const withOptions = (values) => ({ ...noop, magpie: { option: (p, k) => values[k
 // ---- 1) 契约形状 -------------------------------------------------------------
 {
   const mk = Object.fromEntries(PLUGINS)
-  const p = await mk['jet-hub-astudio'](noop, iso.options())
+  const p = await mk['jet-hub-marvis'](noop, iso.options())
   const opts = p.auth.options
   ok(Array.isArray(opts) && opts.length > 0, `auth.options 是数组（${opts?.length} 项）`)
   ok(opts.length <= 16, 'auth.options 不超过 MAX_OPTIONS=16')
@@ -85,33 +85,33 @@ const withOptions = (values) => ({ ...noop, magpie: { option: (p, k) => values[k
 // ---- 2a) prefer_full 的语义（纯函数 + 固定数据）-------------------------------
 // 容器级断言只能证明「接线没断」，证明不了语义：上游此刻有没有「不可用模型」
 // 取决于数据状态 —— 2026-10-31 清空 920 条黑名单之后，全量目录与可用目录是
-// 同一个集合（workbuddy 恒 32/32），「关掉后变少」根本无从发生，那条断言等于
+// 同一个集合（全量与可用一致），「关掉后变少」根本无从发生，那条断言等于
 // 没跑过（变异把 `optionOn('prefer_full', true)` 写死也照样绿）。语义由这里钉死。
 {
-  const live = ['workbuddy/wb-live']
+  const live = ['marvis/mar-live']
   const full = [
-    { id: 'workbuddy/wb-live', name: 'WB Live' },
-    { id: 'workbuddy/wb-gone', name: 'WB Gone', disabled: true },
+    { id: 'marvis/mar-live', name: 'Marvis Live' },
+    { id: 'marvis/mar-gone', name: 'Marvis Gone', disabled: true },
   ]
 
-  const wide = pickModels('workbuddy', { live, full }, true)
+  const wide = pickModels('marvis', { live, full }, true)
   const wideKeys = Object.keys(wide?.models ?? {})
   ok(wide?.from === 'full', `全量开 → 用上游全量目录（from=${wide?.from}）`)
   ok(wideKeys.length === 2, `全量开 → 上游全部 2 个都列出（实数 ${wideKeys.length}）`)
   ok(
-    String(wide?.models?.['wb-gone']?.name ?? '').includes('已在 Jet Hub 关闭'),
-    `全量开 → 已关闭的模型名字带后缀（${wide?.models?.['wb-gone']?.name}）`,
+    String(wide?.models?.['mar-gone']?.name ?? '').includes('已在 Jet Hub 关闭'),
+    `全量开 → 已关闭的模型名字带后缀（${wide?.models?.['mar-gone']?.name}）`,
   )
 
-  const narrow = pickModels('workbuddy', { live, full }, false)
+  const narrow = pickModels('marvis', { live, full }, false)
   const narrowKeys = Object.keys(narrow?.models ?? {})
   ok(narrow?.from === 'live', `全量关 → 退回实时可用目录（from=${narrow?.from}）`)
   ok(narrowKeys.length === 1, `全量关 → 只剩可用的 1 个（实数 ${narrowKeys.length}）`)
-  ok(narrowKeys[0] === 'wb-live', `全量关 → 剩下的正是可用那个（${narrowKeys[0]}）`)
+  ok(narrowKeys[0] === 'mar-live', `全量关 → 剩下的正是可用那个（${narrowKeys[0]}）`)
 
-  ok(pickModels('workbuddy', { live: [], full: [] }, true) === null, '两份目录都空 → 返回 null 交给静态兜底')
+  ok(pickModels('marvis', { live: [], full: [] }, true) === null, '两份目录都空 → 返回 null 交给静态兜底')
   ok(pickModels('trae', { live, full }, true) === null, '目录里没有这家 → 返回 null（不串到别家）')
-  ok(pickModels('workbuddy', {}, true) === null, '没传目录 → 返回 null（不抛错）')
+  ok(pickModels('marvis', {}, true) === null, '没传目录 → 返回 null（不抛错）')
 }
 
 // ---- 2b) 开关真的接到了 currentModels（接线，不是语义）-------------------------
@@ -139,7 +139,7 @@ const withOptions = (values) => ({ ...noop, magpie: { option: (p, k) => values[k
 // ---- 2) 开关真的生效 ---------------------------------------------------------
 {
   const mk = Object.fromEntries(PLUGINS)
-  const factory = mk['jet-hub-workbuddy']
+  const factory = mk['jet-hub-marvis']
   // 先让容器把两个目录都拉到（authorize 会等），否则两份都只有缓存里的旧值
   await factory(withOptions({ prefer_full: true, dead_account_skip: true }), iso.options())
 
@@ -169,8 +169,8 @@ const withOptions = (values) => ({ ...noop, magpie: { option: (p, k) => values[k
 {
   const mk = Object.fromEntries(PLUGINS)
 
-  const plugOn = await mk['jet-hub-codearts'](withOptions({ dead_account_skip: true }), iso.options())
-  const plugOff = await mk['jet-hub-codearts'](withOptions({ dead_account_skip: false }), iso.options())
+  const plugOn = await mk['jet-hub-marvis'](withOptions({ dead_account_skip: true }), iso.options())
+  const plugOff = await mk['jet-hub-marvis'](withOptions({ dead_account_skip: false }), iso.options())
 
   // 工厂内部是模块级单例容器，所以两个插件对象拿到的是同一个实例；
   // 最后一次工厂调用的闭包生效（同一宿主下 input 是同一份）。
@@ -179,14 +179,14 @@ const withOptions = (values) => ({ ...noop, magpie: { option: (p, k) => values[k
   ok(typeof c?.deadSkipCheck === 'function', '容器上挂了 deadSkipCheck 回调')
 
   // 拨到 false 后问回调：必须回 false（= 放行死号）。
-  const offVal = c.deadSkipCheck('codearts')
-  ok(offVal === false, `开关拨到 false 时 deadSkipCheck('codearts') === false（实测 ${String(offVal)}）`)
+  const offVal = c.deadSkipCheck('marvis')
+  ok(offVal === false, `开关拨到 false 时 deadSkipCheck('marvis') === false（实测 ${String(offVal)}）`)
   // 其它 provider 不受影响（开关是按 provider 拨的）。
   const otherVal = c.deadSkipCheck('qoder')
   ok(otherVal !== false, `其它 provider 仍跳过死号（deadSkipCheck('qoder') = ${String(otherVal)}）`)
 
   // 再拨回 true，同一个容器的回调必须立刻变回真（现读，不用重启）。
-  const plugBack = await mk['jet-hub-codearts'](withOptions({ dead_account_skip: true }), iso.options())
+  const plugBack = await mk['jet-hub-marvis'](withOptions({ dead_account_skip: true }), iso.options())
   const backVal = (plugBack._internal?.container ?? c).deadSkipCheck('codearts')
   ok(backVal !== false, `拨回 true 后立即恢复过滤（实测 ${String(backVal)}）`)
 }
@@ -195,7 +195,7 @@ const withOptions = (values) => ({ ...noop, magpie: { option: (p, k) => values[k
 // ---- 3) 宿主没给 input.magpie 时不能崩 ---------------------------------------
 {
   const mk = Object.fromEntries(PLUGINS)
-  const p = await mk['jet-hub-qoder']({}, iso.options())
+  const p = await mk['jet-hub-marvis']({}, iso.options())
   const rows = await p.provider.models({ models: {} })
   ok(rows !== undefined && typeof rows === 'object', '没有 input.magpie 时 models() 仍返回对象（不抛错）')
 }

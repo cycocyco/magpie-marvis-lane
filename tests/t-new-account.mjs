@@ -1,11 +1,11 @@
 /**
- * 「在 magpie 里新建账号」这条路的回归测试。
+ * 「在 magpie 里新建账号」这条路的回归测试（本 fork 裁剪版：只剩 marvis）。
  *
- * 背景：之前只有 `api` 型方法，只能「接一个已经在 DSH 里的号」，用户在 magpie
- * 里根本没法新建。2026-10-29 增加 `oauth` 型方法后，这条路有四个必须守住的点：
+ * 必须守住的点：
  *
- * 1. 四家不声明这个方法（两个路由组 + 两个 Key 型渠道，`account.create` 会
- *    直接回 `unknown provider`）—— 宁可少一个按钮，不要让用户点了才看到报错。
+ * 1. `startNewAccount()` 固定带 `mode: 'browser'`：marvis 的 `account.create`
+ *    必须带 mode（`MarvisAuth` 只有 `loginViaBrowser`，不带 mode 会落到通用分支
+ *    而失败）。
  * 2. `authorize()` 只等 `account.create`，**绝不能等用户**：magpie 侧
  *    `pluginBegin()` 用 `context.WithTimeout(..., time.Minute)` 包住整个
  *    `plugin.Authorize`，等用户必然撞 1 分钟硬超时。
@@ -14,23 +14,25 @@
  * 4. `abandonAccount()` 删之前必须再摸一次 `login.poll`：用户可能恰在超时那刻
  *    登录成功，`account.delete` 会连带 `credentials.unset`，**不可逆**。
  * 5. 单次 `login.poll` 必须有上限（`LOGIN_POLL_TIMEOUT_MS`）：`container.rpc()`
- *    自己没有超时，`login.poll` 内部又会走 `credentials.resolve()`（officeace /
- *    astudio 还有现换凭据的联网分支）—— 一次挂住就会让 9 分钟的等待永不返回。
+ *    自己没有超时，`login.poll` 内部又会走 `credentials.resolve()` ——
+ *    一次挂住就会让 9 分钟的等待永不返回。
  * 6. `account.create` 同样要有上限（`CREATE_TIMEOUT_MS`）：本体是「先登记占位、
- *    再 await 各家 startLogin()」，某家卡住就是「占位已进池、rpc 不返回」。
- * 7. 空 `loginUrl` 不一定是失败：astudio 在「登录方式不是 web 且导入本机会话成功」
- *    时回 `{accountId, loginUrl: '', reused: true}`，账号与凭据都已就位。
+ *    再 await 起登录流程」，那一步卡住就是「占位已进池、rpc 不返回」。
+ * 7. 空 `loginUrl` 是**正常形态**：marvis 走 `browser` 腿时本体自己开隔离浏览器，
+ *    返回恒为 `{ accountId, loginUrl: '', reused: false, incognitoOpened: true }`，
+ *    进度由 `login.poll` 报终态。
  * 8. `abandonAccount()` 返回三态（`kept` / `unknown` / `deleted`）：`kept` 表示
- *    「收尾时发现其实已经登录成功了」，调用方必须改走成功路径，不能把一条可用
- *    账号标成失败。
+ *    「收尾时发现其实已经登录成功了」，调用方必须改走成功路径。
  * 9. `kept` 的判据必须是 `done === true && success !== false`：本体 `login.poll`
- *    里 `loginFailureOf()` 优先于一切进度判据，用户关掉授权页 / 点拒绝 / 设备码
- *    输错超时都会回 `{ done: true, success: false }` —— 只判 `done` 会把**每一次
- *    主动放弃**都当成「其实登录成功了」，在 magpie 里留一条指向不存在账号的绿色
- *    记录（2026-10-29 二审发现，见第 5 节 success:false 那三条用例）。
- * 10. `authorize()` 的超时预算要连 `container.start()` 一起算：`start()` 自己允许
- *     等 40 秒，加上 `CREATE_TIMEOUT_MS` 的 45 秒就是 85 秒，撞穿 magpie 的 1 分钟。
- *     现在 `START_TIMEOUT_MS = 12s` + 45s = 57s（见第 6.2 节）。
+ *    里 `loginFailureOf()` 优先于一切进度判据，用户关掉授权页 / 点拒绝都会回
+ *    `{ done: true, success: false }` —— 只判 `done` 会把**每一次主动放弃**
+ *    都当成「其实登录成功了」。
+ * 10. `authorize()` 的超时预算要连 `container.start()` 一起算：12s + 45s = 57s，
+ *     撞不穿 magpie 的 1 分钟。
+ *
+ * 裁剪说明：原版的「三家不声明 oauth」/ `startNewAccountSmart`（超级麦吉的
+ * mode 分派）/ `NO_NEW_ACCOUNT` / `MAGICREW_CREATE_MODES` 等段落随 28 家供应商
+ * 一并删除，源码里这些声明已不存在。
  *
  * 跑法：`node tests/t-new-account.mjs`（不联网、不碰真实 ~/.dsh）
  *
@@ -51,7 +53,7 @@ process.env.JET_HUB_NO_AUTH_SYNC = '1'
 // 所以自己设一遍。
 process.env.JET_HUB_NO_ADDR_FILE = '1'
 
-// 第 7 节会 `import('index.mjs')` 并逐个调 29 个工厂 —— 工厂里 `containerFor()`
+// 第 7 节会 `import('index.mjs')` 并调工厂 —— 工厂里 `containerFor()`
 // 拿不到 `options.home` 时**回退 `homedir()`**（`src/plugin.mjs` 的 `resolveHome`），
 // 然后 `warmUp()` 在后台真把容器起起来，`_start()` 会写
 // `~/.dsh/cache/models-dev.json` 之类。实测落盘时刻在第 2548ms，而本文件 985ms
@@ -60,15 +62,7 @@ process.env.JET_HUB_NO_ADDR_FILE = '1'
 const TMP_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'jh-newacct-home-'))
 process.env.DSH_HOME = path.join(TMP_HOME, '.dsh')
 
-// officeace 的凭据目录走 `DSH_OFFICEACE_HOME`，**不受 `DSH_HOME` 约束**
-// （`vendor/lib/officeace-auth.js` 的 `officeaceHome()`）。不隔离的话，第 7 节
-// 真起容器时它会去读真实 `~/.dsh-officeace/session.json`，还可能发起一次 STS
-// 续期（`STS5.1806`，refresh_token 一次性，一旦被消费用户的号就掉线）。
-// 指到一个临时空目录，读不到就退化成「未登录」，不会碰用户的真实凭据。
-process.env.DSH_OFFICEACE_HOME = path.join(TMP_HOME, 'officeace')
-fs.mkdirSync(process.env.DSH_OFFICEACE_HOME, { recursive: true })
-
-/** 收尾清理：两个临时目录都不留在 %TEMP% 里。 */
+/** 收尾清理：临时目录不留在 %TEMP% 里。 */
 function cleanupTmp() {
   try {
     fs.rmSync(TMP_HOME, { recursive: true, force: true })
@@ -76,8 +70,7 @@ function cleanupTmp() {
 }
 
 // 挂到 exit 上而不是只在文件末尾调一次：中途的替换守卫（`console.error` +
-// `process.exit(1)`）和未捕获异常都会跳过末尾那行，留下一个空目录
-// （2026-10-29 四审实测两种异常路径各残留 1 个）。
+// `process.exit(1)`）和未捕获异常都会跳过末尾那行，留下一个空目录。
 process.on('exit', cleanupTmp)
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
@@ -125,8 +118,11 @@ const src = fs.readFileSync(SRC, 'utf8').replace(/\r\n/g, '\n')
 
 /* ── 1. 从源码里截出新建账号那一整段原样求值 ── */
 
-const FROM = '/**\n * 本体里**没有** `account.create` 分支的三家'
-const TO = '\n/**\n * 账号在 magpie 里显示成什么。'
+// 截段范围：`LOGIN_POLL_MS` 常量起，到 `credentialAliveOf` 的函数头注释为止
+// —— 这一段正好覆盖全部超时常量 + withDeadline / withRpcDeadline /
+// startNewAccount / pollLoginOnce / waitForLogin / abandonAccount。
+const FROM = 'const LOGIN_POLL_MS = 2_000'
+const TO = '\n/**\n * 这个账号的凭据还在不在'
 const i = src.indexOf(FROM)
 const j = src.indexOf(TO)
 if (i < 0 || j < 0 || j <= i) {
@@ -179,23 +175,26 @@ const make = (container, log = () => {}) =>
     // 看不出是哪条断言红了（2026-10-29 三审指出）。兜成 NaN 之后，第 6.2 节
     // 的 `ok(gotStart, '源码里能读到 START_TIMEOUT_MS（读不到，常量改名了？）')`
     // 就会正常报一条可读的失败。
-    `${body}\nreturn { NO_NEW_ACCOUNT,`
+    `${body}\nreturn {`
       + ' CREATE_TIMEOUT_MS: typeof CREATE_TIMEOUT_MS === "undefined" ? NaN : CREATE_TIMEOUT_MS,'
       + ' START_TIMEOUT_MS: typeof START_TIMEOUT_MS === "undefined" ? NaN : START_TIMEOUT_MS,'
-      + ' withDeadline, withRpcDeadline, startNewAccount, startNewAccountSmart, MAGICREW_CREATE_MODES,'
+      + ' withDeadline, withRpcDeadline, startNewAccount,'
       + ' pollLoginOnce, waitForLogin, abandonAccount }',
   )(container, log, accountsCache)
 
-/** 假容器：按队列依次吐出 `login.poll` 的返回值，并记录删了谁 */
+/** 假容器：按队列依次吐出 `login.poll` 的返回值，并记录删了谁、create 收到的 payload */
 function fakeContainer({ create, polls = [] }) {
   const deleted = []
+  const createPayloads = []
   let n = 0
   return {
     deleted,
+    createPayloads,
     async rpc(method, payload) {
       if (method === 'account.create') {
-        // 'hang' 模拟「account.create 永远不返回」：本体多家是「先登记占位、
-        // 再 await startLogin()」，那一步卡住就是占位已进池、rpc 不返回。
+        createPayloads.push(payload)
+        // 'hang' 模拟「account.create 永远不返回」：本体是「先登记占位、
+        // 再 await 起登录流程」，那一步卡住就是占位已进池、rpc 不返回。
         if (create === 'hang') return new Promise(() => {})
         if (create instanceof Error) throw create
         return create
@@ -204,7 +203,7 @@ function fakeContainer({ create, polls = [] }) {
         const step = polls[Math.min(n, polls.length - 1)]
         n++
         // 'hang' 模拟「这次 rpc 永远不返回」：本体 login.poll 内部会走
-        // credentials.resolve()，officeace / astudio 还有现换凭据的分支，真能挂住
+        // credentials.resolve()，真能挂住
         if (step === 'hang') return new Promise(() => {})
         if (step instanceof Error) throw step
         return step
@@ -218,57 +217,43 @@ function fakeContainer({ create, polls = [] }) {
   }
 }
 
-/* ── 2. 不声明「新建」的两家 ── */
+/* ── 2. 裁剪负断言：这些声明已不存在 ── */
 
-console.log('不声明 oauth 方法的两家（account.create 会回 unknown provider）：')
+console.log('裁剪负断言（28 家专属的声明已随裁剪删除）：')
 {
-  const { NO_NEW_ACCOUNT } = make(fakeContainer({ create: {} }))
-  // 路由组（aggregate / jet-hub-auto）自 2026-10-31 起不再注册成 magpie provider，
-  // 所以也不必再进豁免名单 —— 它们连 provider 都不是了，谈不上「能不能新建」。
-  ok(!NO_NEW_ACCOUNT.has('aggregate'), 'aggregate 不在名单里（已不注册成 provider）')
-  ok(!NO_NEW_ACCOUNT.has('jet-hub-auto'), 'jet-hub-auto 不在名单里（已不注册成 provider）')
-  ok(NO_NEW_ACCOUNT.has('modelscope'), 'Key 型 modelscope 在名单里')
-  ok(NO_NEW_ACCOUNT.has('opencode'), 'Key 型 opencode 在名单里')
-  ok(NO_NEW_ACCOUNT.size >= 3, `名单恰好 3 家（实际 ${NO_NEW_ACCOUNT.size}）`)
-  ok(!NO_NEW_ACCOUNT.has('workbuddy'), 'workbuddy 不在名单里（它能建）')
+  for (const gone of ['NO_NEW_ACCOUNT', 'KEY_ACCOUNT_RPC', 'MAGICREW_CREATE_MODES', 'SPECIAL_CLAIM_PROVIDERS', 'startNewAccountSmart']) {
+    ok(!src.includes(gone), `src/plugin.mjs 里已没有 ${gone}`)
+  }
 }
 
 /* ── 3. startNewAccount ── */
 
-console.log('\nstartNewAccount（拿登录页 + 占位账号 id）：')
+console.log('\nstartNewAccount（固定 mode:browser + 占位账号 id + loginUrl 恒空）：')
 {
-  accountsCache.set('cline', [1, 2, 3])
-  const c = fakeContainer({ create: { accountId: 'cline-abc123', loginUrl: 'https://x/device' } })
+  accountsCache.set('marvis', [1, 2, 3])
+  const c = fakeContainer({ create: { accountId: 'marvis-abc123', loginUrl: '' } })
   const { startNewAccount } = make(c)
-  const { got, err } = await attempt(startNewAccount(c, 'cline', () => {}), 2_000, 'startNewAccount')
+  const { got, err } = await attempt(startNewAccount(c, 'marvis', () => {}), 2_000, 'startNewAccount')
   ok(err === '', `正常返回不抛错（实际错误：${err || '（没有）'}）`)
-  ok(got?.accountId === 'cline-abc123', 'accountId 原样传出')
-  ok(got?.loginUrl === 'https://x/device', 'loginUrl 原样传出')
-  ok(got?.incognitoOpened === false, '本体没说 incognitoOpened 时为 false')
-  ok(accountsCache.get('cline') === undefined, '拿完就清掉该家账号缓存（新占位要能被看见）')
+  ok(got?.accountId === 'marvis-abc123', 'accountId 原样传出')
+  ok(got?.loginUrl === '', 'loginUrl 恒为空串（本体自己开隔离浏览器，没有授权页可给 magpie）')
+  ok(got?.reused === false, 'reused 恒为 false（browser 腿是「等用户登录」，不是 reused）')
+  ok(got?.incognitoOpened === true, 'incognitoOpened 恒为 true（本体自己在后台开窗）')
+  ok(accountsCache.get('marvis') === undefined, '拿完就清掉该家账号缓存（新占位要能被看见）')
+  ok(c.createPayloads.length === 1 && c.createPayloads[0]?.mode === 'browser',
+    `account.create 的 payload 固定带 mode:'browser'（实际 ${JSON.stringify(c.createPayloads[0])}）`)
 }
 {
-  const c = fakeContainer({
-    create: { accountId: 'codearts-zzz', loginUrl: 'https://y', incognitoOpened: true },
-  })
+  // 本体给的 payload 原样转发（除 mode 以外的字段由本体决定，插件不增不减）
+  const c = fakeContainer({ create: { accountId: 'marvis-zzz', loginUrl: '' } })
   const { startNewAccount } = make(c)
-  const { got, err } = await attempt(startNewAccount(c, 'codearts', () => {}), 2_000, 'startNewAccount')
-  ok(err === '', `正常返回不抛错（实际错误：${err || '（没有）'}）`)
-  ok(got?.incognitoOpened === true, 'codearts 已自己拉起无痕窗 → incognitoOpened 透传 true')
+  const { got, err } = await attempt(startNewAccount(c, 'marvis', () => {}), 2_000, 'startNewAccount')
+  ok(err === '', `第二次正常返回也不抛错（实际错误：${err || '（没有）'}）`)
+  ok(got?.accountId === 'marvis-zzz', '第二个 accountId 原样传出')
 }
 {
-  const c = fakeContainer({ create: { accountId: 'cline-abc123' } })
-  const { startNewAccount } = make(c)
-  let err = ''
-  try {
-    await startNewAccount(c, 'cline', () => {})
-  } catch (e) {
-    err = String(e.message ?? e)
-  }
-  ok(/没能为 cline 起一个登录流程/.test(err), '缺 loginUrl → 抛人话错误')
-  ok(/cline-abc123/.test(err), '错误里带上本体返回的原文，方便定位')
-}
-{
+  // （原「缺 loginUrl → 抛错」用例已删：新契约下空 loginUrl 是 browser 腿的正常
+  //   形态，不再抛错；「缺 accountId → 抛错」由第 5.2 节覆盖。）
   const c = fakeContainer({ create: new Error('unknown provider: nope') })
   const { startNewAccount } = make(c)
   let err = ''
@@ -286,7 +271,7 @@ console.log('\nwaitForLogin（三种终态都要认）：')
 {
   const c = fakeContainer({ create: {}, polls: [{ done: true, success: true }] })
   const { waitForLogin } = make(c)
-  const { got: r, err } = await attempt(waitForLogin(c, 'cline', 'cline-abc', () => {}), 3_000, 'waitForLogin')
+  const { got: r, err } = await attempt(waitForLogin(c, 'marvis', 'marvis-abc', () => {}), 3_000, 'waitForLogin')
   ok(err === '', `不抛错（实际错误：${err || '（没有）'}）`)
   ok(r?.ok === true, 'done + success:true → ok')
 }
@@ -296,14 +281,14 @@ console.log('\nwaitForLogin（三种终态都要认）：')
     polls: [{ done: true, success: false, error: '授权页被关掉了' }],
   })
   const { waitForLogin } = make(c)
-  const r = await waitForLogin(c, 'cline', 'cline-abc', () => {})
+  const r = await waitForLogin(c, 'marvis', 'marvis-abc', () => {})
   ok(r.ok === false, 'done + success:false → 失败')
   ok(r.error === '授权页被关掉了', '失败原因用本体给的人话，不自造文案')
 }
 {
   const c = fakeContainer({ create: {}, polls: [{ done: true, success: false }] })
   const { waitForLogin } = make(c)
-  const r = await waitForLogin(c, 'cline', 'cline-abc', () => {})
+  const r = await waitForLogin(c, 'marvis', 'marvis-abc', () => {})
   ok(r.ok === false && r.error.includes('没有完成授权'), '本体没给原因时补一句可读的兜底')
 }
 {
@@ -313,7 +298,7 @@ console.log('\nwaitForLogin（三种终态都要认）：')
     polls: [{ done: false }, { done: false }, { done: true, success: true }],
   })
   const { waitForLogin } = make(c)
-  const { got: r, err } = await attempt(waitForLogin(c, 'cline', 'cline-abc', () => {}), 3_000, 'waitForLogin')
+  const { got: r, err } = await attempt(waitForLogin(c, 'marvis', 'marvis-abc', () => {}), 3_000, 'waitForLogin')
   ok(err === '', `不抛错（实际错误：${err || '（没有）'}）`)
   ok(r?.ok === true, 'done:false 不算终态，继续等到成功')
 }
@@ -324,7 +309,7 @@ console.log('\nwaitForLogin（三种终态都要认）：')
     polls: [new Error('路由暂时不可用'), { done: true, success: true }],
   })
   const { waitForLogin } = make(c)
-  const { got: r, err } = await attempt(waitForLogin(c, 'cline', 'cline-abc', () => {}), 3_000, 'waitForLogin')
+  const { got: r, err } = await attempt(waitForLogin(c, 'marvis', 'marvis-abc', () => {}), 3_000, 'waitForLogin')
   ok(err === '', `不抛错（实际错误：${err || '（没有）'}）`)
   ok(r?.ok === true, '单次轮询抛错不算终态（容器刚起来会短暂失败）')
 }
@@ -333,7 +318,7 @@ console.log('\nwaitForLogin（三种终态都要认）：')
   const c = fakeContainer({ create: {}, polls: [{ done: false }] })
   const { waitForLogin } = make(c)
   const t0 = Date.now()
-  const r = await waitForLogin(c, 'cline', 'cline-abc', () => {})
+  const r = await waitForLogin(c, 'marvis', 'marvis-abc', () => {})
   const dt = Date.now() - t0
   ok(r.ok === false, '一直 done:false → 超时失败')
   ok(/还没在浏览器里完成授权/.test(r.error), '超时文案说清是「没在浏览器里完成」，不是含糊的「超时」')
@@ -346,14 +331,14 @@ console.log('\nabandonAccount（不可逆删除前的三道闸门）：')
 {
   const c = fakeContainer({ create: {}, polls: [{ done: true, success: true }] })
   const { abandonAccount } = make(c)
-  const fate = await abandonAccount(c, 'cline', 'cline-abc', () => {})
+  const fate = await abandonAccount(c, 'marvis', 'marvis-abc', () => {})
   ok(c.deleted.length === 0, 'poll 说已完成 → 绝不删（用户可能恰在超时那刻登录成功）')
   ok(fate === 'kept', `poll 说已完成 → 返回 kept（实际 ${fate}）`)
 }
 {
   const c = fakeContainer({ create: {}, polls: [new Error('问不出来')] })
   const { abandonAccount } = make(c)
-  const fate = await abandonAccount(c, 'cline', 'cline-abc', () => {})
+  const fate = await abandonAccount(c, 'marvis', 'marvis-abc', () => {})
   ok(c.deleted.length === 0, 'poll 抛错 → 保守不删（宁可留占位让用户手动删）')
   ok(fate === 'unknown', `poll 抛错 → 返回 unknown（实际 ${fate}）`)
 }
@@ -368,10 +353,10 @@ console.log('\nabandonAccount（不可逆删除前的三道闸门）：')
     polls: [{ done: true, success: false, error: '授权页被关掉了' }],
   })
   const { abandonAccount } = make(c)
-  const fate = await abandonAccount(c, 'cline', 'cline-abc', () => {})
+  const fate = await abandonAccount(c, 'marvis', 'marvis-abc', () => {})
   ok(fate !== 'kept', `done:true 但 success:false → 不能当 kept（实际 ${fate}）`)
   ok(fate === 'deleted', `done:true 但 success:false → 确认失败，收掉占位（实际 ${fate}）`)
-  ok(c.deleted.length === 1 && c.deleted[0] === 'cline-abc', 'success:false → 占位真的删了')
+  ok(c.deleted.length === 1 && c.deleted[0] === 'marvis-abc', 'success:false → 占位真的删了')
 }
 // 注：`callback()` 本身没在这里真跑 —— 它挂在工厂返回的 `auth.methods[]` 里，
 // 要起真容器才拿得到。它对 `kept` 的处理由第 6 节的源码守卫（`fate !== 'kept'`）
@@ -381,59 +366,31 @@ console.log('\nabandonAccount（不可逆删除前的三道闸门）：')
 {
   const c = fakeContainer({ create: {}, polls: [{ done: false }] })
   const { abandonAccount } = make(c)
-  const fate = await abandonAccount(c, 'cline', 'cline-abc', () => {})
-  ok(c.deleted.length === 1 && c.deleted[0] === 'cline-abc', '确证未完成 → 收掉占位')
+  const fate = await abandonAccount(c, 'marvis', 'marvis-abc', () => {})
+  ok(c.deleted.length === 1 && c.deleted[0] === 'marvis-abc', '确证未完成 → 收掉占位')
   ok(fate === 'deleted', `确证未完成 → 返回 deleted（实际 ${fate}）`)
 }
 {
   // 全程挂住 → pollLoginOnce 超时 → catch 分支 → unknown（不是 kept，也不是 deleted）
   const c = fakeContainer({ create: {}, polls: ['hang'] })
   const { abandonAccount } = make(c)
-  const fate = await abandonAccount(c, 'cline', 'cline-abc', () => {})
+  const fate = await abandonAccount(c, 'marvis', 'marvis-abc', () => {})
   ok(c.deleted.length === 0, 'poll 挂住 → 不删')
   ok(fate === 'unknown', `poll 挂住 → 返回 unknown（实际 ${fate}）`)
 }
 
-/* ── 5.2 空 loginUrl 的两种含义：reused 是成功，其余是失败（M1） ── */
+/* ── 5.2 空 loginUrl 的新契约 ──
+ *
+ * 裁剪后 startNewAccount 对「缺 accountId」抛错、对「loginUrl 为空」不再有任何
+ * 特殊分支（browser 腿的空 loginUrl 是正常形态，统一收口成 reused:false +
+ * incognitoOpened:true）。原版「astudio reused / 别家报错」的三态分辨随裁剪删除。
+ */
 
 console.log('')
-console.log('startNewAccount 对空 loginUrl 的分辨：')
+console.log('startNewAccount 对空 loginUrl 的分辨（新契约）：')
 {
-  // astudio：登录方式不是 web 且导入本机会话成功 → { accountId, loginUrl: '', reused: true }
-  const c = fakeContainer({ create: { accountId: 'astudio-abc', loginUrl: '', reused: true } })
-  const { startNewAccount } = make(c)
-  let got
-  let err = ''
-  try {
-    got = await watchdog(startNewAccount(c, 'astudio', () => {}), 2_000, 'startNewAccount')
-  } catch (e) {
-    err = String(e?.message ?? e)
-  }
-  ok(err === '', `reused:true + 空 loginUrl → 不抛错（实际错误：${err || '（没有）'}）`)
-  got = got ?? {}
-  ok(got.reused === true, 'reused:true + 空 loginUrl → 当成功出口（不是抛错）')
-  ok(got.accountId === 'astudio-abc', '账号 id 照常传出')
-  ok(got.loginUrl === '', 'loginUrl 就是空的（这条路本来没有授权页）')
-  // 2026-11-02 改：reused 也说 opened。**纯防御** —— 当前 magpie 版本下 `opened`
-  // 取真取假渲染完全相同（`internal/gui/api.go` 的 `openError` 对空 URL 直接
-  // `return ""`；`app.js:12106`/`:12210` 都 `&& signing.url` 短路）。真正让用户
-  // 看到正确提示的是 instructions 分叉，不是这个字段。
-  ok(got.incognitoOpened === true, '没有授权页时也说 opened（纯防御，当前版本不参与渲染）')
-}
-{
-  // 有账号 id 但既没 URL 也没 reused → 仍是失败
-  const c = fakeContainer({ create: { accountId: 'cline-abc' } })
-  const { startNewAccount } = make(c)
-  let err = ''
-  try {
-    await startNewAccount(c, 'cline', () => {})
-  } catch (e) {
-    err = String(e.message ?? e)
-  }
-  ok(/没能为 cline 起一个登录流程/.test(err), '空 loginUrl 且无 reused → 仍抛人话错误')
-}
-{
-  // reused 但连 accountId 都没有 → 那是真的什么都没有
+  // 空 loginUrl 本身不抛错（browser 腿正常形态）—— 已在第 3 节验证；
+  // 这里补「连 accountId 都没有 → 抛错」这条，锚住唯一剩下的失败分支。
   const c = fakeContainer({ create: { loginUrl: '', reused: true } })
   const { startNewAccount } = make(c)
   let err = ''
@@ -455,7 +412,7 @@ console.log('pollLoginOnce 的单次上限：')
   const t0 = Date.now()
   let err = ''
   try {
-    await pollLoginOnce(c, 'cline-abc')
+    await pollLoginOnce(c, 'marvis-abc')
   } catch (e) {
     err = String(e?.message ?? e)
   }
@@ -469,7 +426,7 @@ console.log('pollLoginOnce 的单次上限：')
   const c = fakeContainer({ create: {}, polls: ['hang', { done: true, success: true }] })
   const { waitForLogin } = make(c)
   const t0 = Date.now()
-  const { got, err } = await attempt(waitForLogin(c, 'cline', 'cline-abc', () => {}), 3_000, 'waitForLogin')
+  const { got, err } = await attempt(waitForLogin(c, 'marvis', 'marvis-abc', () => {}), 3_000, 'waitForLogin')
   const cost = Date.now() - t0
   ok(err === '', `不抛错（实际错误：${err || '（没有）'}）`)
   ok(got?.ok === true, '一次挂住不算终态，下一轮成功就成功')
@@ -480,7 +437,7 @@ console.log('pollLoginOnce 的单次上限：')
   const c = fakeContainer({ create: {}, polls: ['hang'] })
   const { waitForLogin } = make(c)
   const t0 = Date.now()
-  const got = await waitForLogin(c, 'cline', 'cline-abc', () => {})
+  const got = await waitForLogin(c, 'marvis', 'marvis-abc', () => {})
   const cost = Date.now() - t0
   ok(got.ok === false, '全程挂住 → 到点失败（不是永不返回）')
   ok(/等了 \d+ (分钟|秒)/.test(String(got.error)), `失败原因是超时的人话：${got.error}`)
@@ -499,7 +456,7 @@ console.log('account.create 的单次上限：')
   try {
     // 看门狗给 1.5 秒：被测代码的 CREATE_TIMEOUT_MS 在测试里被换成 120ms，
     // 所以正常路径必然先抛；只有「守卫被删掉」才会撞到看门狗。
-    await watchdog(startNewAccount(c, 'cline', () => {}), 1_500, 'startNewAccount')
+    await watchdog(startNewAccount(c, 'marvis', () => {}), 1_500, 'startNewAccount')
   } catch (e) {
     err = String(e?.message ?? e)
   }
@@ -511,7 +468,7 @@ console.log('account.create 的单次上限：')
   // 守卫本身：到点抛、正常返回不抛、且不会让进程多活
   const c = fakeContainer({ create: { accountId: 'x', loginUrl: 'https://y' } })
   const { withRpcDeadline } = make(c)
-  const v = await withRpcDeadline(c, 'account.create', { provider: 'cline' }, 120, 'account.create')
+  const v = await withRpcDeadline(c, 'account.create', { provider: 'marvis' }, 120, 'account.create')
   ok(v.accountId === 'x', 'withRpcDeadline 正常路径原样透传返回值')
 }
 
@@ -530,21 +487,10 @@ console.log('\n源码守卫：')
   const authBody = stripComments(src.slice(authStart, authEnd))
   ok(!/waitForLogin/.test(authBody), 'authorize() 里不调 waitForLogin（那会撞 magpie 的 1 分钟硬超时）')
   ok(
-    /startNewAccount(Smart)?\s*\(/.test(authBody),
-    'authorize() 真的调了 startNewAccount / startNewAccountSmart（不是只写在注释里）',
+    /startNewAccount\s*\(/.test(authBody),
+    'authorize() 真的调了 startNewAccount（不是只写在注释里）',
   )
-  // 分派点：直接调 `startNewAccount` 会漏掉超级麦吉的 `mode` 分派（那家的
-  // `account.create` 不带 `mode` 必被本体拒），所以必须走 Smart 那层。
-  // ⚠️ 扫的必须是 `authBody`（authorize 那一段），**不能**是 `stripComments(src)`：
-  // `startNewAccountSmart` 的**定义**就在全文里，扫全文等于恒真 —— 把 authorize()
-  // 改回直接调 `startNewAccount` 后这条断言照样打勾（2026-10-30 三审变异验证实测：
-  // 改成 `await startNewAccount(` 后本文件 exit 0 全绿）。而那条变异在真机上会让
-  // 超级麦吉的新建请求不带 `mode`，被本体兜底分支拒成「不支持手机号密码登录」。
-  ok(
-    /startNewAccountSmart\s*\(/.test(authBody),
-    'authorize() 走的是 startNewAccountSmart（否则超级麦吉不带 mode，必被拒）',
-  )
-  ok(/opened:/.test(authBody), 'authorize() 返回 opened（否则 codearts 会被 magpie 再开一次带旧 cookie 的窗）')
+  ok(/opened:/.test(authBody), 'authorize() 返回 opened（marvis 的 browser 腿本体自己开窗，magpie 不应再开窗）')
   // 预算守卫：start() 允许 40 秒 + create 45 秒 = 85 秒，会撞穿 magpie 给
   // authorize() 的 1 分钟硬超时。必须给 start() 也套上限（2026-10-29 二审指出）。
   ok(
@@ -586,7 +532,6 @@ console.log('\n源码守卫：')
   ok(/await waitForLogin\s*\(/.test(cbBody), 'callback() 里真的 await 了 waitForLogin')
   ok(/abandonAccount\s*\(/.test(cbBody), 'callback() 失败时真的调了 abandonAccount')
   ok(/fate !== 'kept'/.test(cbBody), "callback() 认 abandonAccount 的 'kept'（否则把已登录的号标成失败）")
-  ok(/if \(reused\)/.test(cbBody), 'callback() 对 reused（导入本机会话）走成功出口')
 }
 
 /* ── 6.2 超时预算：start + create 必须 < magpie 的 1 分钟 ── */
@@ -639,227 +584,36 @@ console.log('authorize() 的超时预算：')
   ok(got === 'ok-value', '正常路径原样透传返回值')
 }
 
-/* ── 6.9 startNewAccountSmart：只有超级麦吉按 mode 试两次 ── */
-
-console.log('\n超级麦吉的 mode 分派：')
-{
-  const { MAGICREW_CREATE_MODES } = make(fakeContainer({ create: {} }))
-  ok(
-    Array.isArray(MAGICREW_CREATE_MODES) && MAGICREW_CREATE_MODES.join(',') === 'browser,local-browser',
-    `mode 顺序是 browser → local-browser（实际 ${JSON.stringify(MAGICREW_CREATE_MODES)}）`,
-  )
-
-  // ① 别家只调一次、且 payload 里**不带** mode 字段
-  {
-    const seen = []
-    const c = {
-      async rpc(method, payload) {
-        seen.push({ method, payload })
-        if (method === 'account.create') return { accountId: 'x-1', loginUrl: 'https://e/x' }
-        throw new Error('没预期的 rpc: ' + method)
-      },
-    }
-    const { startNewAccountSmart } = make(c)
-    const r = await startNewAccountSmart(c, 'workbuddy', () => {})
-    ok(r.accountId === 'x-1', '别家照常返回 accountId')
-    ok(seen.length === 1, `别家只调一次 account.create（实际 ${seen.length}）`)
-    ok(!('mode' in seen[0].payload), '别家的 payload 里没有 mode 字段（多传未知字段没必要冒险）')
-  }
-
-  // ② 超级麦吉：第一条腿成功就不再试第二条
-  {
-    // browser（第一条腿）成功 ⇒ 立刻收口，不再去导入本机会话。
-    const seen = []
-    const c = {
-      async rpc(method, payload) {
-        seen.push({ method, payload })
-        if (method === 'account.create') {
-          return { accountId: 'mr-1', loginUrl: '', reused: false }
-        }
-        throw new Error('没预期的 rpc: ' + method)
-      },
-    }
-    const { startNewAccountSmart } = make(c)
-    const r = await startNewAccountSmart(c, 'magicrew', () => {})
-    ok(seen.length === 1, `browser 成了就不再导入本机会话（实际调了 ${seen.length} 次）`)
-    ok(seen[0].payload.mode === 'browser', `第一次试的是 browser（实际 ${seen[0].payload.mode}）`)
-    ok(r.reused === false, 'browser 的空 loginUrl 是「等用户登录」，不是 reused')
-    ok(r.incognitoOpened === true, 'browser 那条按「本体自己开窗」返回（incognitoOpened）')
-  }
-
-  // ③ 第一条腿（browser）失败 → 退第二条腿 local-browser，并按 browser 记第一次失败
-  {
-    const seen = []
-    const c = {
-      async rpc(method, payload) {
-        seen.push({ method, payload })
-        if (method === 'account.create') {
-          if (payload.mode === 'browser') {
-            throw new Error('浏览器起不来')
-          }
-          return { accountId: 'mr-2', loginUrl: '', reused: true }
-        }
-        throw new Error('没预期的 rpc: ' + method)
-      },
-    }
-    const { startNewAccountSmart } = make(c)
-    const r = await startNewAccountSmart(c, 'magicrew', () => {})
-    ok(seen.length === 2, `两条腿都试了（实际 ${seen.length} 次）`)
-    ok(
-      seen.map((s) => s.payload.mode).join(',') === 'browser,local-browser',
-      `试的顺序是 browser → local-browser（实际 ${seen.map((s) => s.payload.mode).join(',')}）`,
-    )
-    ok(r.reused === true, 'local-browser 那条按 reused 收口（凭据在 create 返回前就写好了）')
-    ok(r.incognitoOpened === true, 'reused 也说 opened（纯防御，当前版本不参与渲染）')
-  }
-
-  // ④ 两条腿都失败 → 抛**第一条**（browser）的错误：那才是用户点「新建」想走的路，
-//    local-browser 的失败（本机没有登录态）多是预期内的，报它定位不到问题。
-  {
-    const c = {
-      async rpc(method, payload) {
-        if (method === 'account.create') {
-          throw new Error(payload.mode === 'local-browser' ? '本机没有登录态' : '窗口起不来')
-        }
-        throw new Error('没预期的 rpc: ' + method)
-      },
-    }
-    const { startNewAccountSmart } = make(c)
-    let err
-    try {
-      await startNewAccountSmart(c, 'magicrew', () => {})
-    } catch (e) {
-      err = String(e?.message ?? e)
-    }
-    ok(
-      err.startsWith('窗口起不来') && err.includes('另 1 条方式'),
-      `两条腿都失败时报的是第一条腿（browser）的错误、并带上另一条腿（实际 ${err}）`,
-    )
-  }
-
-  // ⑤ 空 loginUrl 的三种含义必须分得开（这条是 5.2 节 M1 的 magicrew 版）
-  {
-    // local-browser：空 URL = 成功（凭据在 create 返回前就写好了）
-    // 第一条腿（browser）必须先失败，否则永远走不到 local-browser。
-    const c1 = {
-      async rpc(method, payload) {
-        if (method === 'account.create' && payload.mode === 'browser') throw new Error('浏览器起不来')
-        return { accountId: 'mr-3', loginUrl: '', reused: true }
-      },
-    }
-    const r1 = await make(c1).startNewAccountSmart(c1, 'magicrew', () => {})
-    ok(r1.reused === true && r1.loginUrl === '', 'local-browser 的空 URL 是成功（reused）')
-
-    // browser：空 URL = 已登记、等用户登录（不是失败、也不是 reused）
-    const c2 = {
-      async rpc(method, payload) {
-        if (method === 'account.create') {
-          if (payload.mode === 'local-browser') throw new Error('没登录态')
-          return { accountId: 'mr-4', loginUrl: '' }
-        }
-        throw new Error('没预期的 rpc: ' + method)
-      },
-    }
-    const r2 = await make(c2).startNewAccountSmart(c2, 'magicrew', () => {})
-    ok(r2.reused === false && r2.incognitoOpened === true, 'browser 的空 URL 是「等登录」不是失败')
-
-    // 别家：空 URL 且没有 reused → 必须抛错（否则用户看到「新建失败」池里却多了一张卡）
-    const c3 = {
-      async rpc() { return { accountId: 'w-1', loginUrl: '' } },
-    }
-    let err3
-    try {
-      await make(c3).startNewAccountSmart(c3, 'workbuddy', () => {})
-    } catch (e) {
-      err3 = String(e?.message ?? e)
-    }
-    ok(err3 !== undefined && err3.includes('workbuddy'), '别家的空 URL 一律抛错（并点名 provider）')
-  }
-}
-
-/* ── 7. oauth 方法本身的形状 ── */
+/* ── 7. oauth 方法本身的形状（本 fork 只剩 marvis 一家）── */
 
 console.log('\noauth 方法形状：')
 {
   const mod = await import('file:///' + path.join(ROOT, 'index.mjs').replace(/\\/g, '/'))
-  const withOauth = []
-  const without = []
-  for (const [name, fn] of Object.entries(mod)) {
-    if (typeof fn !== 'function') continue
+  const fns = Object.entries(mod).filter(([, v]) => typeof v === 'function')
+  ok(fns.length === 1, `入口只导出 1 个插件工厂（实际 ${fns.length}）`)
+  for (const [name, fn] of fns) {
     // ⚠️ 必须传 home：不传就走 `resolveHome()` 的 `homedir()` 回退，`warmUp()`
     // 会在后台把容器起起来并往真实 `~/.dsh` 写缓存（见文件头 TMP_HOME 那段）。
     const p = await fn({ client: { app: { log: () => {} } } }, { home: TMP_HOME })
+    ok(p.auth.provider === 'jet-hub-marvis', `provider id 是 jet-hub-marvis（实际 ${p.auth.provider}）`)
     const oauth = (p.auth.methods ?? []).filter((m) => m.type === 'oauth')
-    if (oauth.length > 0) withOauth.push(p.auth.provider)
-    else without.push(p.auth.provider)
+    ok(oauth.length === 1, `${p.auth.provider} 恰有一个 oauth 型新建方法`)
     for (const m of oauth) {
       ok(typeof m.authorize === 'function', `${p.auth.provider} 的 oauth 方法有 authorize`)
       ok(m.ask === undefined, `${p.auth.provider} 的 oauth 方法没有 ask（新建没得选）`)
       ok(typeof m.label === 'string' && m.label.includes('新建'), `${p.auth.provider} 的 oauth 标签说清是「新建」`)
     }
-  }
-  // ⚠️ 别把家数写死：2026-10-30 上游加 magicrew 时这里硬编码的 `20` 就红了一次，
-  //    而插件本身是对的（该红的是断言）。判据改成「除豁免集之外，一家不少」。
-  const { DSH_PROVIDERS, idOf } = await import(pathToFileURL(path.join(ROOT, 'src/plugin.mjs')).href)
-  // ⚠️ 豁免集**从源码派生**，别再抄一份：原先这里是手写的 magpie id 列表
-  // （`'jet-hub'` / `'jet-hub-aggregate'` / …），而 `src/plugin.mjs` 里还有一份
-  // 内部 id 形态的 `NO_NEW_ACCOUNT`。两份拷贝一旦漂移，测试会替错的实现背书。
-  //
-  // 从**源码文本**里解析（不能 `import` 它：那个常量没导出，而 `index.mjs`
-  // 的导出契约也不允许它导出 —— 多导一个常量整个插件就加载失败）。
-  const nonaSrc = src.match(/const NO_NEW_ACCOUNT = new Set\(\[([^\]]*)\]\)/)
-  ok(nonaSrc !== null, '能从 src/plugin.mjs 里解析出 NO_NEW_ACCOUNT')
-  const NO_NEW_ACCOUNT = new Set(
-    (nonaSrc?.[1] ?? '').split(',').map((s) => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean),
-  )
-  // 三家（modelscope / opencode / qiniu）是 Key 型渠道，本体不给 `account.create`。
-  // 路由组（aggregate / jet-hub-auto）自 2026-10-31 起不再注册成 provider，不在这里。
-  ok(NO_NEW_ACCOUNT.size >= 3, `NO_NEW_ACCOUNT 应有 3 家，实际 ${NO_NEW_ACCOUNT.size}`)
-  const EXEMPT = new Set([...NO_NEW_ACCOUNT].map(idOf))
-  const expected = DSH_PROVIDERS.map((d) => idOf(d)).filter((id) => !EXEMPT.has(id))
-  ok(
-    withOauth.slice().sort().join(',') === expected.slice().sort().join(','),
-    `能新建的正是「${DSH_PROVIDERS.length} 家减去豁免三家 = ${expected.length} 家」：缺 ${
-      expected.filter((id) => !withOauth.includes(id)).join(', ') || '无'
-    } / 多 ${withOauth.filter((id) => !expected.includes(id)).join(', ') || '无'}`,
-  )
-  // ⚠️ 2026-11-01 起这三家**能新建**了，只是不走 `oauth` 那条（它们没有
-  // `account.create`），走各自的 `*.addAccount` —— 方法是 `api` 型 + `keyless`
-  // + `ask()` 收 Key。所以判据从「没有 oauth 方法」改成「有 Key 型新建方法」。
-  const keyNew = new Map()
-  for (const [name, fn] of Object.entries(mod)) {
-    if (typeof fn !== 'function') continue
-    const p = await fn({ client: { app: { log: () => {} } } }, { home: TMP_HOME })
-    // ⚠️ 判据不能靠 label 里的中文（改一个文案就假红）。结构上「新建」那条是
-    // **第二条** api+keyless+有 ask；第一条（接已有账号）也是 api+keyless+有 ask，
-    // 所以只能靠位置区分（这个顺序是设计决定：第一项是默认选中、
-    // 符合多数人的动作，见 src/plugin.mjs 里那段注释）。
+    // 裁剪后的方法面：第 1 条是「接已有账号」的 api 型，第 2 条是 oauth 型新建 ——
+    // 不再有任何「贴 Key 新建」的 api+ask 方法（那三家 Key 型渠道已随裁剪删除）。
     const methods = p.auth.methods ?? []
-    const m = methods.length > 1
-      ? methods.find((x, i) => i > 0 && x.type === 'api' && x.keyless === true && typeof x.ask === 'function')
-      : undefined
-    if (m) keyNew.set(p.auth.provider, m)
+    ok(methods.length === 2, `${p.auth.provider} 恰有 2 个签入方法（实际 ${methods.length}）`)
+    ok(methods[0]?.type === 'api' && methods[0]?.keyless === true, '第 1 个方法是 api 型 + keyless（接已有账号）')
+    ok(methods[1]?.type === 'oauth', '第 2 个方法是 oauth 型（新建账号）')
   }
-  // 2026-11-02 上游同步后：qiniu 同时进 NO_NEW_ACCOUNT 与 KEY_ACCOUNT_RPC
-  // （`vendor/lib/qiniu-rpc.js:106` 确有 `case 'qiniu.addAccount'`），
-  // 所以两张表回到「逐家相等」的严格关系。
-  ok(
-    [...keyNew.keys()].sort().join(',') === [...EXEMPT].sort().join(','),
-    `有「贴 Key 新建」方法的正是这三家：${[...keyNew.keys()].sort().join(', ')}`,
-  )
-  // `without` = 「没有 oauth 型新建方法」的家 —— 正好是那三家 Key 型渠道，
-  // 它们的新建走 `api` 型 + `ask()`，不该被算成「不能新建」。
-  ok(
-    without.slice().sort().join(',') === [...EXEMPT].sort().join(','),
-    `没有 oauth 方法的就是那三家（走 Key 型新建）：${without.slice().sort().join(', ')}`,
-  )
-  for (const [id, m] of keyNew) {
-    ok(m.type === 'api', `${id} 的 Key 新建方法是 api 型`)
-    ok(m.keyless === true, `${id} 的 Key 新建方法 keyless（让 magpie 跳过它自己的输入框）`)
-    ok(typeof m.authorize === 'function', `${id} 的 Key 新建方法有 authorize`)
-  }
+  const { DSH_PROVIDERS } = await import(pathToFileURL(path.join(ROOT, 'src/plugin.mjs')).href)
+  ok(DSH_PROVIDERS.join(',') === 'marvis', `DSH_PROVIDERS 只剩 marvis（实际 ${DSH_PROVIDERS.join(', ')}）`)
+  ok(fns.map(([n]) => n).join(',') === 'JetHubMarvisPlugin', `工厂名是 JetHubMarvisPlugin（实际 ${fns.map(([n]) => n).join(', ')}）`)
 }
-
 /* ── 10. vendor 的 provider 表 vs 插件 DSH_PROVIDERS 对账 ── */
 //
 // 为什么要有这一节：上游每次加一家 provider，插件侧必须同步三处
@@ -882,7 +636,11 @@ console.log('\noauth 方法形状：')
     // 不加 `'?` 会把它漏掉 —— 二审实测：插一行 `'fake-newprov-x': pruned(...)` 时
     // 旧正则抽不出这个键，于是「vendor 里这些 provider 插件没接」永远看不到它，测试假绿。
     const keys = [...vendorIdx.slice(start, end).matchAll(/^\s{8}'?([a-zA-Z0-9_-]+)'?:\s*pruned\(/gm)].map((m) => m[1])
-    ok(keys.length >= 20, `modelAdapters 应抽出 20+ 个 provider，实际 ${keys.length}`)
+    // 裁剪锚点：表里只剩 marvis + 两个路由组（aggregate / jet-hub-auto），共 3 键。
+    ok(
+      [...keys].sort().join(',') === 'aggregate,jet-hub-auto,marvis',
+      `modelAdapters 恰为 marvis + 两个路由组（实际 ${keys.join(', ')}）`,
+    )
     const { DSH_PROVIDERS: DP } = await import(pathToFileURL(path.join(ROOT, 'src', 'plugin.mjs')).href)
     const vendorSet = new Set(keys)
     const pluginSet = new Set(DP)
@@ -900,11 +658,10 @@ console.log('\noauth 方法形状：')
     //    那种只会在运行时 404。
     const extra = DP.filter((k) => !vendorSet.has(k))
     ok(extra.length === 0, `插件里这些 provider 在 vendor 里不存在：${extra.join(', ') || '无'}`)
-    // ③ `NAMES` 必须覆盖全部 29 家 —— 漏一家会在 magpie 的方法选择器里显示成内部 id
-    //    （当年 `DSH_PROVIDERS` 还含路由组时漏过一次：25 项对 24 键 `NAMES`）。
-    //    这里对账的是「键齐全且有非空文案」，不校验文案内容。
-    //    `NAMES` 和 `NO_NEW_ACCOUNT` 一样没从 `src/plugin.mjs` 导出（`index.mjs` 的
-    //    导出契约只允许 29 个工厂），所以同样从源码文本里解析。
+    // ③ `NAMES` 必须覆盖全部 provider —— 漏一家会在 magpie 的方法选择器里显示成
+    //    内部 id。这里对账的是「键齐全且有非空文案」，不校验文案内容。
+    //    `NAMES` 没从 `src/plugin.mjs` 导出（`index.mjs` 的导出契约只允许插件工厂），
+    //    所以同样从源码文本里解析。
     const pluginSrc = fs.readFileSync(path.join(ROOT, 'src', 'plugin.mjs'), 'utf8')
       .split(String.fromCharCode(13, 10)).join(String.fromCharCode(10))
     const namesStart = pluginSrc.indexOf('const NAMES = {')
@@ -920,9 +677,11 @@ console.log('\noauth 方法形状：')
       const noName = DP.filter((p) => !named.has(p))
       ok(noName.length === 0, `NAMES 缺这些 provider 的显示名：${noName.join(', ') || '无'}`)
     }
-    // ④ `FALLBACK_MODELS` 必须 29 家各至少一条 —— 它是「内存缓存与磁盘缓存都没有时」
+    // ④ `FALLBACK_MODELS` 必须每家至少一条 —— 它是「内存缓存与磁盘缓存都没有时」
     //    的唯一兜底（`currentModels()` 的第 3 档）。漏一家 = 那家第一次启动在 magpie
-    //    里一个模型都看不到，且没有任何报错。此前这张表长期只有 16 条、且缺 magicrew。
+    //    里一个模型都看不到，且没有任何报错。
+    //    （原「快照对账」⑤⑥ 两节已删：page/models.js 快照与 scripts/snapshot-models.mjs
+    //     都随裁剪移除，没有对账对象了。）
     const fbStart = pluginSrc.indexOf('const FALLBACK_MODELS = {')
     const fbEnd = fbStart > 0 ? pluginSrc.indexOf(String.fromCharCode(10) + '}', fbStart) : -1
     ok(fbStart > 0 && fbEnd > fbStart, '能从 src/plugin.mjs 里切出 FALLBACK_MODELS 表')
@@ -933,86 +692,11 @@ console.log('\noauth 方法形状：')
       )
       const noFallback = DP.filter((p) => !fbProviders.has(p))
       ok(noFallback.length === 0, `FALLBACK_MODELS 缺这些 provider 的兜底模型：${noFallback.join(', ') || '无'}`)
-      // ⑤ 兜底表的 model id 必须真在**最近一次快照**里 —— 只查 provider 前缀抓不到
-      //    「那一条点不通」（2026-10-30 四审实测：25 条里有 3 条 id 上游早已删掉，
-      //    `opencode/beam-free` / `modelscope/deepseek-ai/…` / `minimaxintl/MiniMax-M2`，
-      //    冷启动且无缓存时点这些条目直接 404，而前缀对账全绿）。
-      const snapPath = path.join(ROOT, 'page', 'models.js')
-      const snapSrc = fs.readFileSync(snapPath, 'utf8')
+      // 点名：marvis 的唯一槽位必须是 `main-auto`（服务端自动路由，真实模型 id
+      // 不能直传 —— 上游回 400「无效模型id」）。
       const fbIds = [...fbBody.matchAll(/^\s+'([^']+)':/gm)].map((m) => m[1])
-      ok(fbIds.length >= 20, `FALLBACK_MODELS 应抽出 20+ 条模型，实际 ${fbIds.length}`)
-      // 快照是「运行中容器实际拉到目录的那些家」的快照。判据不能是「整文件子串找
-      // 一下这段前缀」—— 那样把某一家整个删掉也照样绿（三审实测：删掉 workbuddy
-      // 整家，旧写法 deadIds=[] 全绿）。改成解析 JSON、按家比较、只放行白名单。
-      const snapJson = snapSrc.slice(snapSrc.indexOf('{'), snapSrc.lastIndexOf('}') + 1)
-      const snap = JSON.parse(snapJson)
-      const snapModels = new Set(snap.models ?? [])
-      const snapProvs = new Set(Object.keys(snap.providers ?? {}))
-      ok(
-        snap.total === snapModels.size,
-        `快照 total 与 models 长度不一致：${snap.total} vs ${snapModels.size}`,
-      )
-      // 白名单只写「本轮确实拿不到」的家，每条都写清原因；能拿到时必须删掉这一条
-      // （下面有反向锚点盯着），否则白名单会烂在代码里、永久掩盖真缺失。
-      // 2026-11-03：宿主重启后快照重跑，25 家已齐全，白名单清空
-      // （留着任何一条都等于永久掩盖真缺失，下面那条反向锚点就是防这个）。
-      // 2026-11-10：同步上游 `1d12f80`（接腾讯 Marvis）后重跑快照，29 家全部拿到
-      // 目录 —— `magicrew` / `magicrewintl` 的凭据已恢复（上一版白名单里那两条就是
-      // 等这一天，反向锚点如约变红），`marvis` 的 `main-auto` 也在。再次清空。
-      const SNAPSHOT_MISSING = new Map()
-      const expectProvs = [...new Set(fbIds.map((id) => `jet-hub-${id.split('/')[0]}`))]
-      ok(expectProvs.length >= 20, `FALLBACK 应覆盖 20+ 家，实际 ${expectProvs.length}`)
-      for (const [p, why] of SNAPSHOT_MISSING) {
-        ok(
-          !snapProvs.has(p),
-          `${p} 应该仍然缺席（白名单原因：${why}）—— 若它已出现在快照里，就要删掉白名单这一条`,
-        )
-      }
-      const missProvs = expectProvs.filter((p) => !snapProvs.has(p) && !SNAPSHOT_MISSING.has(p))
-      ok(missProvs.length === 0, `快照缺这些家且不在白名单：${missProvs.join(', ') || '无'}`)
-      const deadIds = fbIds.filter((id) => {
-        const seg = id.split('/')
-        const prov = seg[0]
-        const model = seg.slice(1).join('/')
-        // `jet-hub-auto` 是插件自己的路由组，快照里它的 id 段是 `jet-hub/`
-        const prefix = prov === 'jet-hub-auto' ? 'jet-hub/' : `jet-hub-${prov}/`
-        const mp = `jet-hub-${prov}`
-        if (!snapProvs.has(mp)) return !SNAPSHOT_MISSING.has(mp) // 只有白名单内的家允许整家缺席
-        return !snapModels.has(prefix + model)
-      })
-      ok(deadIds.length === 0, `FALLBACK_MODELS 里这些 id 在最近快照中不存在：${deadIds.join(', ') || '无'}`)
-
-      // ⑥ 两套显示名必须逐字一致。`src/plugin.mjs` 的 `NAMES` 是 magpie 供应商列表
-      //    用的那套，`scripts/snapshot-models.mjs` 的 `NAMES` 是侧栏「模型」标签分组
-      //    标题用的那套 —— 两边都没导出（`index.mjs` 只许导插件工厂），只能各存一份，
-      //    于是天然会漂：2026-10-30 实测 `Accio（阿里）` vs `Accio`、`Qoder 国内` vs
-      //    `Qoder CN`、`聚合路由` vs `聚合`，同一家在两处显示成两个名字。
-      const snapNamesSrc = fs.readFileSync(path.join(ROOT, 'scripts', 'snapshot-models.mjs'), 'utf8')
-      const pluginNames = new Map()
-      {
-        const from = src.indexOf('const NAMES = {')
-        const to = src.indexOf(String.fromCharCode(10) + '}', from)
-        ok(from > 0 && to > from, '能从 src/plugin.mjs 切出 NAMES 表')
-        const body = src.slice(from, to)
-        for (const m of body.matchAll(/^\s+'?([a-zA-Z0-9_-]+)'?:\s*'([^']*)'/gm)) pluginNames.set(m[1], m[2])
-      }
-      const snapNames = new Map()
-      {
-        const from = snapNamesSrc.indexOf('const NAMES = {')
-        const to = snapNamesSrc.indexOf(String.fromCharCode(10) + '}', from)
-        ok(from > 0 && to > from, '能从 scripts/snapshot-models.mjs 切出 NAMES 表')
-        const body = snapNamesSrc.slice(from, to)
-        for (const m of body.matchAll(/^\s+'([^']+)':\s*\['([^']*)'/gm)) snapNames.set(m[1], m[2])
-      }
-      ok(pluginNames.size === 29, `src/plugin.mjs 的 NAMES 应正好 29 家，实际 ${pluginNames.size}`)
-      ok(snapNames.size === 29, `scripts/snapshot-models.mjs 的 NAMES 应正好 29 家，实际 ${snapNames.size}`)
-      const nameDrift = []
-      for (const [dsh, want] of pluginNames) {
-        const magpieId = dsh === 'jet-hub-auto' ? 'jet-hub' : `jet-hub-${dsh}`
-        const got = snapNames.get(magpieId)
-        if (got !== want) nameDrift.push(`${dsh}（插件「${want}」vs 快照「${got ?? '缺失'}」）`)
-      }
-      ok(nameDrift.length === 0, `两套显示名不一致：${nameDrift.join('；') || '无'}`)
+      ok(fbIds.includes('marvis/main-auto'), `FALLBACK_MODELS 里有 marvis/main-auto（实际 ${fbIds.join(', ')}）`)
+      ok(fbIds.every((id) => id === 'marvis/main-auto'), `FALLBACK_MODELS 只剩 marvis 一家的条目（实际 ${fbIds.join(', ')}）`)
     }
   }
 }
@@ -1021,7 +705,7 @@ cleanupTmp()
 
 console.log('')
 if (bad === 0) {
-  console.log(`✓ 全部通过（${total} 项：新建账号链路 —— 三家豁免、只拿到 URL 就返回、三种终态、删除前三道闸门）`)
+  console.log(`✓ 全部通过（${total} 项：新建账号链路 —— 固定 mode:browser、只拿到占位就返回、三种终态、删除前三道闸门）`)
   process.exit(0)
 }
 console.log(`✗ ${bad} 项失败`)

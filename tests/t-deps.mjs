@@ -373,22 +373,35 @@ ok(
     devOnlyButRuntime.map((n) => `    ${n}  ← ${[...new Set(importedBy.get(n))].slice(0, 3).join(', ')}`).join('\n'),
 )
 
-// ── 断言 ②：vendor 那份自己的 package.json 若声明了，外层也必须声明 ─────────
+// ── 断言 ②：vendor 那份自己的 package.json 与外层声明的最小对账 ───────────────
 //
-// 这条专治本次事故的形状：`vendor/package.json` 写着 jose/undici，
-// 外层漏了。外层是**实际被安装的那份**，vendor 那份只对「独立按上游装」有效。
+// 这条专治本次事故的形状：`vendor/package.json` 写着 jose/undici，外层漏了。
+// 外层是**实际被安装的那份**，vendor 那份只对「独立按上游装」有效。
 // 而且不只比包名，还比**版本区间字符串** —— 外层写成 `jose: "^5"`、vendor 是 `^6`，
 // 名字对得上、装下来的版本却对不上，运行期照样炸。
+//
+// ⚠️ 本 fork 裁剪说明：vendor/package.json 是上游产物、未随裁剪同步，里面还留着
+// undici / wreq-js 这类**裁剪后代码已不再 import** 的声明。所以「gap」检查收窄为
+// 「vendor 声明**且 vendor/lib 代码仍在 import** 的包，外层必须也声明」——
+// 纯声明残留不再误报；只要 vendor 代码真用上某个未声明的包，这里照样红。
+// 「vendor 里 import 了、外层没声明」这条主防线其实由断言 ① 兜着（vendor/lib
+// 也在扫描集里），本段只补「版本区间逐字一致」这半边。
 
 let vendorPkg = null
 try { vendorPkg = JSON.parse(readFileSync(path.join(ROOT, 'vendor', 'package.json'), 'utf8')) } catch { /* 没有就跳过 */ }
 ok(vendorPkg !== null, 'vendor/package.json 读不出来 —— 与上游声明对齐这一整组（gap / drift / peerThird / engines）被跳过了')
 if (vendorPkg) {
   const upstreamDeps = vendorPkg.dependencies ?? {}
-  const gap = Object.keys(upstreamDeps).filter((n) => !declared.has(n))
+  // 只对「vendor/lib 代码仍在 import」的包要求外层声明（理由见上面的裁剪说明）。
+  const vendorImported = new Set(
+    [...importedBy.entries()]
+      .filter(([, refs]) => refs.some((p) => p.startsWith('vendor/lib/')))
+      .map(([n]) => n),
+  )
+  const gap = Object.keys(upstreamDeps).filter((n) => vendorImported.has(n) && !declared.has(n))
   ok(
     gap.length === 0,
-    `vendor/package.json 声明了但外层 package.json 没声明：${gap.join(', ')}` +
+    `vendor 代码仍在 import、vendor/package.json 也声明了、但外层 package.json 没声明：${gap.join(', ')}` +
       `（外层才是实际被装的，漏了就换机必崩）`,
   )
   const rootDeps = pkg.dependencies ?? {}

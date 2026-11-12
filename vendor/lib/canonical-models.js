@@ -151,21 +151,6 @@ export function normalizeNameKey(name) {
     return normalizeModelKey(stripped);
 }
 /**
- * Magicrew **两站共用**的规范键补丁（国内 `magicrew` / 国际 `magicrewintl`）。
- *
- * ⚠️ 抽成常量的理由：两站共用同一份 `MAGICREW_FALLBACK_MODELS`（`magicrew-product.ts`
- * 里 `qwen-3.8-flash` 那条 id **带连字符**）⇒ 补丁必须**逐个相同**。
- * 复制两份会让「加一条补丁只改了一边」变成静默缺陷（国际站自成一个孤立虚拟模型，
- * 聚合轮换列表里永远看不到它，零报错零日志 —— 与 `accio` 那次完全同型）。
- *
- * ⚠️ 放在 `CANONICAL_OVERRIDES` **之前**且各自带自己的 JSDoc —— 否则会把
- * 上面那一整块「## 什么时候需要它 / 每条都必须有实测依据」的文档顶掉，
- * 变成孤儿注释（2026-11-01 二审查出的形态：声明插在两个注释块之间）。
- */
-const MAGICREW_CANONICAL_OVERRIDES = Object.freeze({
-    'qwen-3.8-flash': 'qwen3-8-flash',
-});
-/**
  * 显式映射补丁：`provider → realId → 规范键`。
  *
  * ## 什么时候需要它
@@ -185,96 +170,16 @@ const MAGICREW_CANONICAL_OVERRIDES = Object.freeze({
  * 未实测确认的条目**不要**加进来（宁可让它各自成一个单渠道虚拟模型）。
  * 实施时用 e2e 探针逐条核对（见设计文档 §11 的 O1/O2）。
  */
+/**
+ * 显式映射补丁：`provider → realId → 规范键`。
+ *
+ * ## 本 fork 的裁剪说明
+ *
+ * 原版的补丁条目（lobsterai / accio / magicrew 两站）全部随被删渠道移除。
+ * marvis 的唯一槽位 `main-auto` 经 id 通道归一即得规范键，**无需任何补丁**。
+ * 保留表结构与判定顺序（排除集 → 补丁 → 主通道），不动调用方形状。
+ */
 export const CANONICAL_OVERRIDES = Object.freeze({
-    lobsterai: Object.freeze({
-        // 远端专有 id；其兜底表里没有它。实测展示名为 DeepSeek-V4.1-Flash
-        // （tests/unit/lobsterai-adapter.spec.ts 的远端桩即此形态）。
-        'deepseek-flash': 'deepseek-v4-1-flash',
-    }),
-    // ⚠️ qoder / qodercn 的 dfmodel 是否属于 V4.1 **尚未实测确认**
-    //（其展示名不带版本号）。在确认前**故意不登记** —— 它会经 name 通道归成
-    // `deepseek-flash`，单独成一个虚拟模型。登记它请先跑实发验证。
-    /**
-     * ⚠️⚠️ **accio**（用户要求它进聚合的轮换候选表，2026-10-13）。
-     *
-     * ## 为什么需要（实测的键形态差异）
-     *
-     * `accio` 走 `name` 通道（见 `PRIMARY_CHANNEL`），而它的展示名 `Qwen 3.8 Flash`
-     * 里**有空格** ⇒ `normalizeNameKey` 把空格转成连字符 ⇒ 得 `qwen-3-8-flash`。
-     * 而 loomy / trae / qoder 走 **id 通道**，id 形如 `qwen3.8-flash`（**无空格**）
-     * ⇒ `normalizeModelKey` 只转点号 ⇒ 得 `qwen3-8-flash`（**无连字符**）。
-     *
-     * ⇒ 两者是**同一个模型但键不同** ⇒ 被拆成两个虚拟模型
-     * ⇒ 用户在聚合的「Qwen3.8-Flash 轮换列表」里**看不到 accio**（症状静默：
-     * 它只是不在候选表里）。实测逐个跑 `canonicalKeyFor`：
-     *
-     * ```
-     * loomy / trae / qoder → qwen3-8-flash   ← 三家在用的既有键
-     * accio（不加补丁）    → qwen-3-8-flash  ← 多一个连字符，成了孤例
-     * ```
-     *
-     * ## ⚠️ 只登记**确知是同一模型**的那些
-     *
-     * 方向是**宁可拆开也不误并**（本文件铁律：猜错会让请求打到错的模型且无提示）。
-     * 逐条实测后的结论：
-     * - `Qwen 3.8 Flash`（`1Drift-F8hS3mK7pL2n`）→ `qwen3-8-flash` ✅ **登记**
-     *   —— 四家展示名逐字一致，确知同模型；
-     * - `Qwen 3.8 Max` → **不登记**：它经 name 通道得 `qwen-3-8-max`，而 loomy 的
-     *   id `qwen-3.8-max` 也得 `qwen-3-8-max`，**本来就一致**，加补丁是多此一举
-     *   （且有守卫锁着「连字符形态本来就一致」这件事）；
-     * - `Qwen 3.8 27B` / `Qwen 3.5 A3B` / `Standard` / `Professional` / `Ultimate`
-     *   → **不登记**：它们是 accio（或其上游）**独有的规格**，猜着并进别家 =
-     *   打错模型。⚠️ 27B 与 A3B 是**两个不同的模型**，绝不能并进 `qwen3-8-flash`。
-     *
-     * ## ⚠️⚠️ 索引键是 **accio 的对外 id（slug）**，不是上游 `modelCode`
-     *
-     * 补丁按 `realId` 查，而 `realId` 来自 `ctx.llm.listModels(provider)` 返回的
-     * **`id`**。自 2026-10-13 起 accio 的对外 id 改成了 slug
-     * （`accio-adapter.ts` 的 `accioModelIdOf`，为的是让模型能自报人话）⇒
-     * **本表必须跟着改用 slug 索引**。
-     *
-     * ⚠️ 这是一条**静默的连带失效**：若仍按 `1Drift-F8hS3mK7pL2n` 索引，
-     * 查表恒不命中 ⇒ accio 掉回 `qwen-3-8-flash` 孤例键 ⇒
-     * **聚合的轮换列表里又看不到它了**（正是加这条补丁要解决的症状），
-     * 且不会有任何报错。
-     */
-    accio: Object.freeze({
-        // 对外 id（`normalizeNameKey('Qwen 3.8 Flash')`）→ 三家在用的既有规范键。
-        'qwen-3-8-flash': 'qwen3-8-flash',
-    }),
-    /**
-     * Magicrew（超级麦吉国内站，2026-10-29，参与聚合）。
-     *
-     * ⚠️ **只有一条**，成因与 accio **相反**（那边是「展示名有空格」，这边是
-     * 「**上游 id 自带连字符**」）：magicrew 走默认的 `id` 通道，而它的 id 是
-     * `qwen-3.8-flash`（**带**连字符）⇒ `normalizeModelKey` 只转点号 ⇒
-     * 得 `qwen-3-8-flash`；而 loomy / trae / qoder 的 id 是 `qwen3.8-flash`
-     *（**不带**）⇒ 得 `qwen3-8-flash`。
-     *
-     * ⇒ **同一模型两个键** ⇒ 被拆成两个虚拟模型 ⇒ 用户在聚合的
-     * 「Qwen3.8-Flash 轮换列表」里**看不到 magicrew**（症状**静默**：它只是
-     * 不在候选表里）。与 accio 那条同因同形，只是成因反过来。
-     *
-     * ⚠️ 其余 26 个**不登记**：它们的键本来就与既有渠道一致（已逐个跑过
-     * `normalizeModelKey` / `canonicalKeyFor`，`via` 全是 `id` 且键与 buddy 等家
-     * 逐字相同），加补丁是多此一举，且会遮住将来真实的对不上。
-     */
-    magicrew: MAGICREW_CANONICAL_OVERRIDES,
-    /**
-     * **MagiCrew 国际站**（`magicrewintl`，2026-11-01）。
-     *
-     * ⚠️⚠️ 必须**与国内站逐个相同**，且必须**单独登记**（不能指望某种继承）：
-     * 两个 provider 共用同一份 `MAGICREW_FALLBACK_MODELS`（`magicrew-product.ts`
-     * 里 `qwen-3.8-flash` 那条 id **带连字符**），漏登记的症状与 `accio` 那次
-     * 完全同型且**静默**：`canonicalKeyFor('magicrewintl','qwen-3.8-flash',…)`
-     * 走 `via: 'id'` 得到 `qwen3-8-flash` 之外的另一个键 ⇒ 国际站自成一个孤立的
-     * 虚拟模型 ⇒ 聚合的「Qwen3.8-Flash 轮换列表」里**永远没有国际站**，
-     * 且模型选择器里 qwen3.8-flash 相关会出现两条。零报错、零日志。
-     *
-     * ⇒ 两站共用同一个常量对象（上面那个 `MAGICREW_CANONICAL_OVERRIDES`），
-     *   这样「加一条补丁只改一处」—— 复制两份必然漂移。
-     */
-    magicrewintl: MAGICREW_CANONICAL_OVERRIDES,
 });
 /**
  * 一个候选条目归入哪个规范键。

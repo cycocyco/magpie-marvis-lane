@@ -36,45 +36,22 @@ ok(isDeadAccount({ refreshable: false, expiresAt: NaN }, NOW) === false,
 ok(isDeadAccount(null, NOW) === false, 'null → 放行不抛错')
 ok(isDeadAccount(undefined, NOW) === false, 'undefined → 放行不抛错')
 
-// ---- loomy 豁免（真实缺陷，2026-10-28）-------------------------------------
-// loomy 的 refreshable 恒 false 是「无续期端点」的诚实标记（loomy-auth.js:34-37），
-// expires_at 是本地按 14 天推算的假日期（loomy-auth.js:198-206 + loomy-oauth.js:35）。
-// 两条腿合起来对它**恒真** ⇒ 登录满 14 天即把唯一在服务的号判死。必须豁免。
-console.log('\nloomy 豁免：')
-ok(isDeadAccount({ provider: 'loomy', refreshable: false, expiresAt: NOW - 60_000 }, NOW) === false,
-  'loomy 的 refreshable=false + 已过期 → **不算**死号（判据对它不可信）')
-ok(isDeadAccount({ provider: 'loomy', refreshable: false, expiresAt: NOW - 14 * 24 * 3600_000 }, NOW) === false,
-  'loomy 过期 14 天 → 仍不算死号（它压根没有续期概念）')
+// ---- 豁免名单（DEAD_JUDGE_UNTRUSTED）裁剪说明 ------------------------------
+// 原版在这里锁 loomy 豁免（它的 refreshable 恒 false 是「无续期端点」的诚实标记、
+// expiresAt 是本地按 14 天推算的假日期，判据对它恒真 ⇒ 必须豁免）。
+// 本 fork 只剩 marvis（OAuth 凭据，refreshable 真实、expiresAt 来自上游），
+// `src/container.mjs` 的 DEAD_JUDGE_UNTRUSTED 已清空、loomy 模块已随 vendor 裁剪
+// 删除 —— 所以 loomy 豁免的三节测试整段移除，改为负断言：
+// 现在不存在任何「判据不可信 → 豁免」的家，同样输入一律算死号。
+console.log('\n豁免名单已清空（判据对所有 provider 一致）：')
+ok(isDeadAccount({ provider: 'loomy', refreshable: false, expiresAt: NOW - 60_000 }, NOW) === true,
+  'loomy 同样输入 → 也算死号（豁免名单已随裁剪清空，不再有特判）')
 ok(isDeadAccount({ provider: 'codearts', refreshable: false, expiresAt: NOW - 60_000 }, NOW) === true,
-  '非 loomy 同样输入 → 仍然算死号（豁免没扩大）')
+  'codearts 同样输入 → 算死号')
 ok(isDeadAccount({ provider: 'minimax', refreshable: false, expiresAt: NOW - 60_000 }, NOW) === true,
-  'minimax 同样输入 → 仍然算死号（它的 refreshable 是兑出来的）')
+  'minimax 同样输入 → 算死号（它的 refreshable 是兑出来的）')
 ok(isDeadAccount({ provider: 'astudio', refreshable: false, expiresAt: NOW - 60_000 }, NOW) === true,
-  'astudio 同样输入 → 仍然算死号（它的 expiresAt 恒不写，第二腿恒不成立）')
-
-// ---- 豁免前提的反向守卫（Jeb 要求）----------------------------------------
-// 豁免是建立在 vendor 两个事实上的：① loomy 没有真正的 refreshableOf 判据；
-// ② 它的 expires_at 是本地按 14 天算出来的假日期，不是服务端下发。
-// 任何一条被上游改掉，豁免就不再成立、会真的漏掉死号。
-// 这条断言**故意读 vendor 源码**：它要抓的正是「上游某天变了而这里没人知道」。
-// 报警方式 = 断言失败（CI 与 test-all 都会红），而不是日志 —— 静默继续豁免
-// 是这轮最危险的失败模式。
-console.log('\n豁免前提守卫（读 vendor 源码）：')
-{
-  const { readFileSync } = await import('node:fs')
-  const { fileURLToPath } = await import('node:url')
-  const { dirname, join } = await import('node:path')
-  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
-  const authSrc = readFileSync(join(root, 'vendor/lib/loomy-auth.js'), 'utf8')
-  const oauthSrc = readFileSync(join(root, 'vendor/lib/loomy-oauth.js'), 'utf8')
-
-  ok(!/refreshableOf:/.test(authSrc),
-    'loomy-auth.js 仍无 refreshableOf 判据（若有了，说明上游给了可信判据 → 应撤豁免并重估）')
-  ok(/expires_at:\s*String\(\s*Date\.now\(\)\s*\+\s*LOOMY_SESSION_TTL_SECONDS/.test(authSrc),
-    'loomy 的 expires_at 仍是本地推算（若改成服务端真日期 → 第二腿可信 → 应撤豁免）')
-  ok(/LOOMY_SESSION_TTL_SECONDS\s*=\s*1_209_600/.test(oauthSrc),
-    'LOOMY_SESSION_TTL_SECONDS 仍是 14 天常量（1209600 秒）')
-}
+  'astudio 同样输入 → 算死号（它的 expiresAt 恒不写，第二腿恒不成立）')
 
 // 用假 pool 验证包装后的选号行为（复刻真实 pool 的两个方法签名）。
 console.log('\n包装后的选号：')
@@ -114,29 +91,8 @@ const before = pool.getAvailableAccount
 container._filterDeadAccounts(ctx)
 ok(pool.getAvailableAccount === before, '重复安装幂等')
 
-// loomy 豁免在**包装层**同样生效：池里唯一一个 loomy 号已过期，
-// 但它是「无续期端点」的诚实 false + 本地推算的假日期 ⇒ 必须仍被选中。
-// 这条锁住的是 P0 的伤害链：若在包装层被筛掉，选号会被交给 fallback，
-// 而 loomy 的 fallback 是 `LOOMY_ACCESS_TOKEN` 这个**并不存在**的 ref
-// （plugin-auth.json 里只有 jet-hub-loomy / jet-hub-loomy#1i2rdg）。
-const loomyAccounts = [
-  { id: 'loomy-old', provider: 'loomy', enabled: true, refreshable: false, expiresAt: NOW - 14 * 24 * 3600_000 },
-]
-const loomyPool = {
-  readAccounts: () => loomyAccounts,
-  getAvailableAccount: async (provider, _m, exclude) => {
-    const hit = loomyAccounts.find((a) => a.provider === provider && a.enabled && !(exclude?.has(a.id)))
-    return hit === undefined ? null : { entry: hit }
-  },
-  listAvailableCredentials: async (provider) =>
-    loomyAccounts.filter((a) => a.provider === provider).map((e) => ({ entry: e })),
-}
-const loomyContainer = new JetHubContainer({ home: '/x', entryPath: '/x', log: () => {} })
-loomyContainer._filterDeadAccounts({ accountPool: loomyPool })
-const loomyPick = await loomyPool.getAvailableAccount('loomy', '')
-ok(loomyPick?.entry?.id === 'loomy-old', '过期的 loomy 号仍被选中（不被死号过滤筛掉）')
-const loomyList = await loomyPool.listAvailableCredentials('loomy')
-ok(loomyList.length === 1, 'listAvailableCredentials 也保留过期的 loomy 号')
+// （原「loomy 豁免在包装层同样生效」一节已删：loomy 随 28 家供应商裁剪移除，
+// 豁免名单 DEAD_JUDGE_UNTRUSTED 已清空，见上面的负断言。）
 
 // ---- 开关真的能关掉过滤（auth.options 的 dead_account_skip）------------------
 // 这一半验的是容器侧契约：`container.deadSkipCheck(provider)` 返回 false 时，

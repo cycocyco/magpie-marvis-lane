@@ -76,11 +76,10 @@ export const AUTO_CHOICE_TTL_MS = 60_000;
  * 发现「auto 从来不用那个有 1000 万额度的号」。
  */
 export const AUTO_PROVIDERS = [
-    'codearts',
-    'loomy',
-    'zcode',
-    'buddy',
-    'workbuddy',
+    // ⚠️ 本 fork 裁剪：原版五家（codearts / loomy / zcode / buddy / workbuddy）随
+    // 供应商裁剪移除；marvis 2026-11-10 集成审计 Minor 4 补入——它的钱包就是
+    // 跨账号的到期余额探测端点（`aggregate-expiry.js` 的 `marvisExpiry`），
+    // 完全满足本表的纳入标准。
     'marvis',
 ];
 /** auto 适配器对外只挂一个模型；真实能力在选型后从目标 provider 借用。 */

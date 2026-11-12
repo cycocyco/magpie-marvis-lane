@@ -9,15 +9,19 @@
 // ③ 值得单独立断言：`toOpenAiSse` 的四个出口都会自己发 `[DONE]`，如果直连层
 // 「顺手补一条」，客户端会收到两个终止帧 —— 这类 bug 只有数帧数才看得出来。
 //
-// 侧写隔离与 `t-console.mjs` 同源（JET_HUB_NO_ADDR_FILE + 家目录改道），
-// 因为这里也真起容器、也会走到写地址文件那段代码。
+// 家目录改道（JET_HUB_NO_ADDR_FILE + USERPROFILE/HOME 指到临时目录），
+// 因为这里也真起容器、也会走到写地址文件那段代码（原 t-console 已随控制台裁剪删除）。
 import { homedir, tmpdir } from 'node:os'
 import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { JetHubContainer } from '../src/container.mjs'
-import { ZCODE_PNG_BASE64 } from '../src/zcode-icon.mjs'
 import { live, skipLive } from './_iso.mjs'
+
+// 1×1 透明 PNG：图片入站用例的夹具（原版用 `src/zcode-icon.mjs` 的 ZCode 图标，
+// 该文件已随 page/ 一起裁剪删除）。任何能解出 image 块的字节流都行，上游对某张
+// 图接受与否是模型/账号的事，不是这条链路的契约。
+const TINY_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
 
 const entryPath = fileURLToPath(new URL('../vendor/lib/index.js', import.meta.url))
 const log = (m) => console.log('  ·', m)
@@ -140,7 +144,7 @@ try {
           role: 'user',
           content: [
             { type: 'text', text: '这张图里是什么？一句话。' },
-            { type: 'image_url', image_url: { url: `data:image/png;base64,${ZCODE_PNG_BASE64}` } },
+            { type: 'image_url', image_url: { url: `data:image/png;base64,${TINY_PNG_BASE64}` } },
           ],
         }],
       }),
@@ -178,7 +182,8 @@ try {
   console.error('✗ 异常：', e?.stack ?? e)
   failed += 1
 } finally {
-  await container.console?.close?.()
+  // （原 `container.console?.close?.()` 已删：控制台随裁剪移除，容器没有
+  //   需要显式关闭的资源 —— 容器对象随进程退出自然回收。）
   for (const [k, v] of Object.entries(savedEnv)) {
     if (v === undefined) delete process.env[k]
     else process.env[k] = v

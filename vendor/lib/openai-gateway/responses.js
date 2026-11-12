@@ -75,7 +75,6 @@ import { normalizeUpstreamFailure } from './model-errors.js';
 // 各自写了一套更严的判据才发生的。
 import { hasUsableToolName } from '../sse.js';
 import { failureToOpenAiError, withSuggestion } from './stream.js';
-import { rewriteTencentContentFingerprints } from './tencent-fingerprint.js';
 import { toOpenAiUsage } from './usage.js';
 const UNSUPPORTED = 'unsupported_parameter';
 function unsupported(message) {
@@ -467,7 +466,7 @@ async function toMessages(input, provider, model, bridge, limits) {
                 // ⚠️ 与 Chat 路径 `convertMessage` 的 assistant 分支**同一判据**：assistant
                 // 正文也在腾讯系风控的扫描范围内（实测 400/11128，见 ./tencent-fingerprint.ts）。
                 // 漏掉这里等于「同一份历史在 `/v1/chat/completions` 放行、在 `/v1/responses` 被拦」。
-                const text = rewriteTencentContentFingerprints(textFromContent(content), provider);
+                const text = textFromContent(content);
                 pushAssistant(text.length > 0 ? [{ type: 'text', text }] : []);
                 continue;
             }
@@ -476,7 +475,7 @@ async function toMessages(input, provider, model, bridge, limits) {
                 // 否则同一份提示词在 `/v1/responses` 上被拦、在 `/v1/chat/completions` 上放行。
                 messages.push(createGatewayMessage('system', [{
                         type: 'text',
-                        text: rewriteTencentContentFingerprints(textFromContent(content), provider),
+                        text: textFromContent(content),
                     }], { kind: GATEWAY_SOURCE_KIND }));
                 continue;
             }
@@ -623,7 +622,7 @@ export async function toResponsesGenerateOptions(body, signal, reasoningEffortOv
         // system 通道（客户端常把整份系统提示词放这里），漏掉它等于该端点没修。
         messages.push(createGatewayMessage('system', [{
                 type: 'text',
-                text: rewriteTencentContentFingerprints(body.instructions, provider),
+                text: body.instructions,
             }], { kind: GATEWAY_SOURCE_KIND }));
     }
     messages.push(...await toMessages(body.input, provider, model, images.bridge, limits));

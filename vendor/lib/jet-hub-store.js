@@ -966,145 +966,25 @@ class MemoryStore {
  * provider id ↔ 凭据 ref 前缀的**单一真相源**。
  *
  * 账号凭据一律存 `{PREFIX}_ACCOUNT_{UUID_SHORT}`（本插件的既有约定），故可据
- * ref 名反推 provider。**表与正则都由本表派生** —— 这是刻意的：
+ * ref 名反推 provider。**表与正则都由本表派生** —— 这是刻意的：表与正则分家会
+ * 漂移出「加了 provider 却漏改正则」这类缺陷（原版已复发过十次）。
  *
- * ⚠️ 表与正则分家会漂移出「加了 provider 却漏改正则」这类缺陷。真实缺陷（**同型两次**）：
+ * ## 本 fork 的裁剪说明
  *
- * ① 本表原先只有 **6 项**（注释也写着「六个 provider」），而插件实际有 **11 个**
- * —— `qodercn` / `cline` / `loomy` / `raccoon` / `zcode` 五个 provider 的账号在
- * `state.json`（Jet Hub 状态文档）缺失时（重装 / 迁移 / profile 重建）
- * **无法从 `.credentials.yaml` 的 `refs:` 恢复**，用户侧表现为「重装 / 迁移后
- * 这几个面板的账号凭空消失，只能重新登录」。凭据本体一直完好，只是索引建不出来。
+ * 原版登记了 29 家；本 fork 只保留 **marvis**。
  *
- * ② **2026-10-02 同型复发**：上游合并第 12 个 provider `minimax` 时**又漏加了本表**
- * —— `tests/unit/jet-hub-store.spec.ts` 的派生用例当场变红（期望 12 项、实得 11 项），
- * 但那条用例没在合并前跑到。⇒ 教训：**合并任何「新增 provider」的分支前先跑它**；
- * 靠人眼维护本表已经漏过两次。
- *
- * ⚠️ **必须与 `src/jet-hub-rpc.ts` 的 `account.create` 生成的 ref 前缀一致**
+ * ⚠️ **必须与 `jet-hub-rpc.js` 的 `account.create` 生成的 ref 前缀一致**
  * （那里是 `${provider.toUpperCase()}_ACCOUNT_${suffix}`）。**新增 provider 时
  * 漏加本表 = 该 provider 的账号在状态文档丢失后静默消失**。
  *
- * ⚠️ 单凭据回退 ref（如 `CODEARTS_ACCESS_TOKEN` / `ZCODE_CREDENTIAL`）不含
- * `_ACCOUNT_`，故不会被本表误吞 —— 这里只需登记账号 ref 前缀。
- *
- * ⚠️ 本表的顺序与客户端 `plugin-src/client/jet-hub.js` 的 `PROVIDERS` **保持一致** ——
- * 派生用例不校验顺序（恢复顺序由 refs 文件决定），但两者对齐后便于逐项核对。
- *
- * 依据 `src/product.ts` 与各 `*-product.ts` 的 `id` 字段：
- * `codearts` / `buddy` / `workbuddy` / `lobsterai` / `qoder` / `qodercn`
- * / `trae` / `cline` / `loomy` / `raccoon` / `minimax` / `minimaxintl`
- * / `zcode` / `opencode` / `gemini` / `officeace` / `accio` / `astudio`。
- * ⚠️ 这行清单必须与**下面那张表的实际项数**一致（2026-10-13 合并审计：
- *    此前它漏了 `officeace` —— 表里有、清单里没有，属注释失实）。
+ * ⚠️ 单凭据回退 ref（如 `MARVIS_ACCESS_TOKEN`）不含 `_ACCOUNT_`，
+ * 故不会被本表误吞 —— 这里只需登记账号 ref 前缀。
  */
 const REF_PREFIX_TO_PROVIDER = [
-    ['CODEARTS', 'codearts'],
-    ['BUDDY', 'buddy'],
-    ['WORKBUDDY', 'workbuddy'],
-    ['LOBSTERAI', 'lobsterai'],
-    ['QODER', 'qoder'],
-    ['QODERCN', 'qodercn'],
-    ['TRAE', 'trae'],
-    ['CLINE', 'cline'],
-    ['LOOMY', 'loomy'],
-    ['RACCOON', 'raccoon'],
-    // ⚠️ 第 12 个 provider（上游 2026-10-02 合并）—— 曾漏加，见上方注释 ②。
-    ['MINIMAX', 'minimax'],
-    // ⚠️ 第 17 个 provider（minimaxintl，2026-10-15）—— 同款坑第 **六** 次。
-    // MiniMax Code 国际版与本表里的 `minimax` **是两个 provider**（账号不互通、
-    // 凭据 ref 前缀不同），故必须各占一行。
-    // 漏加 = `MINIMAXINTL_ACCOUNT_*` 的账号在 `state.json` 缺失时静默消失
-    //（凭据还在 `.credentials.yaml` 里，只是索引建不出来，用户只能重新登录）。
-    // ⚠️ 它与 `MINIMAX` 是**超串关系**（`MINIMAXINTL` 以 `MINIMAX` 开头）——
-    //    顺序由 `ACCOUNT_REF_RE` 内部的**长度降序排序**保证，与本数组的书写顺序无关。
-    ['MINIMAXINTL', 'minimaxintl'],
-    ['ZCODE', 'zcode'],
-    // ⚠️ 第 13 个 provider（opencode，2026-10-01）—— 与上面 minimax 同款坑：
-    // 漏加会让「恢复备份」认不出 opencode 账号（见上方注释 ②）。
-    ['OPENCODE', 'opencode'],
-    // ⚠️ **本 fork 独有**的 provider（modelscope，2026-10-16）—— 同款坑第 **五** 次。
-    // 漏加 = `MODELSCOPE_ACCOUNT_*` 的账号在 `state.json` 缺失时**静默消失**
-    //（凭据还在 `.credentials.yaml` 里，只是索引建不出来，用户只能重新授权）。
-    //
-    // ⚠️ 前缀取 `MODELSCOPE`（不是旧 fork 反代的 `PROXY_UPSTREAM_MODELSCOPE`）：
-    //    上游整套反代命名空间都不存在，且 `account.create` 生成的账号 ref 恒为
-    //    `${provider.toUpperCase()}_ACCOUNT_${suffix}` —— 两者必须对上，否则本表认不出它。
-    ['MODELSCOPE', 'modelscope'],
-    // ⚠️ **本 fork 独有**的 provider（qiniu，2026-10-29）—— 同款坑第 **六** 次。
-    // 漏加 = `QINIU_ACCOUNT_*` 的账号在 `state.json` 缺失时**静默消失**
-    //（凭据还在 `.credentials.yaml` 里，只是索引建不出来，用户只能重新粘贴 Key）。
-    //
-    // ⚠️ 前缀取 `QINIU`：`account.create` 生成的账号 ref 恒为
-    //    `${provider.toUpperCase()}_ACCOUNT_${suffix}`（见 `qiniu-rpc.ts` 的
-    //    `qiniuSlotNamesOf`），两者必须对上，否则本表认不出它。
-    ['QINIU', 'qiniu'],
-    // ⚠️ **本 fork 独有**的 provider（monkeycode，2026-11-02）—— 同款坑又一次。
-    // 漏加 = `MONKEYCODE_ACCOUNT_*` 的账号在 `state.json` 缺失时**静默消失**
-    //（凭据还在 `.credentials.yaml` 里，只是索引建不出来，用户只能重新粘贴 Key）。
-    //
-    // ⚠️ 前缀取 `MONKEYCODE`：`monkeycode-rpc.ts` 的 `monkeycodeSlotNamesOf`
-    //    生成的 ref 恒为 `MONKEYCODE_ACCOUNT_${suffix}`，两者必须对上。
-    ['MONKEYCODE', 'monkeycode'],
-    // ⚠️ 国际站（2026-11-02，2026-11-02 接入）—— script 同款坑第 **八** 次。
-    //    与 `MONKEYCODE` 是**超串关系**（`MONKEYCODEINTL` 以 `MONKEYCODE` 开头）——
-    //    顺序由 `ACCOUNT_REF_RE` 内部的**长度降序排序**保证，与本数组书写顺序无关
-    //    （与 `MINIMAX` / `MINIMAXINTL`、`AUTOCLAW` / `AUTOCLAWINTL` 同型）。
-    //    漏加 = 国际站账号在 `state.json` 缺失时**静默消失**（凭据还在
-    //    `.credentials.yaml` 里，只是索引建不出来，用户只能重新登录）。
-    ['MONKEYCODEINTL', 'monkeycodeintl'],
-    // ⚠️ 百智云（`BAIZHI_ACCOUNT_*`，2026-11-02）：与 MONKEYCODE 系列**无前缀关系**，
-    //    但同样必须登记 —— 漏了它，`state.json` 里的账号列表损坏/缺失时，
-    //    从凭据 ref 反推 provider 会失败 ⇒ 账号在重启后**静默消失**。
-    ['BAIZHI', 'baizhi'],
-    // ⚠️ 第 14 个 provider（gemini，2026-10-03）—— 同款坑第 **三** 次。
-    // 漏加 = `GEMINI_ACCOUNT_*` 的账号在 `state.json` 缺失时静默消失
-    //（凭据还在 `.credentials.yaml` 里，只是索引建不出来，用户只能重新授权）。
-    // 本表与客户端 `PROVIDERS` 的一致性由
-    // `tests/unit/jet-hub-store.spec.ts` 的「恢复表覆盖客户端 PROVIDERS 的全部
-    // provider（从真实清单派生）」用例锁死 —— 合并新增 provider 前**先跑它**。
-    ['GEMINI', 'gemini'],
-    // ⚠️ 第 15 个 provider（officeace，2026-10-12）—— 同款坑第 **四** 次。
-    // 漏加 = `OFFICEACE_ACCOUNT_*` 的账号在 `state.json` 缺失时静默消失
-    //（凭据还在 `.credentials.yaml` 里，只是索引建不出来，用户只能重新登录）。
-    ['OFFICEACE', 'officeace'],
-    // ⚠️ 第 16 个 provider（accio，2026-10-13）—— 同款坑第 **五** 次
-    //（⚠️ 与 officeace **同一次合并**并入，两者各算一次复发）。
-    // 漏加 = `ACCIO_ACCOUNT_*` 的账号在 `state.json` 缺失时静默消失
-    //（凭据还在 `.credentials.yaml` 里，只是索引建不出来，用户只能重新登录）。
-    ['ACCIO', 'accio'],
-    ['AUTOCLAW', 'autoclaw'],
-    // ⚠️ 第 18 个 provider（astudio，2026-10-16）—— 同款坑第 **六** 次。
-    // 漏加 = `ASTUDIO_ACCOUNT_*` 的账号在 `state.json` 缺失时静默消失
-    //（凭据还在 `.credentials.yaml` 里，只是索引建不出来，用户只能重新导入）。
-    ['ASTUDIO', 'astudio'],
-    // ⚠️ Codely（Unity，2026-10-19）：**UI 先行阶段**就提前登记（registry 里该条
-    //    `channel: false`，但恢复表守卫按**全量** registry 派生、只豁免 aggregate
-    //    —— 漏加会让 `jet-hub-store.spec.ts` 的派生用例变红）。账号 ref 形态沿用
-    //    统一规则 `CODELY_ACCOUNT_${suffix}`（`account.create` 的前缀规则）。
-    ['CODELY', 'codely'],
-    // ⚠️ 腾讯 Marvis（2026-11-09）—— 同款坑第 **十** 次。
-    // 漏加 = `MARVIS_ACCOUNT_*` 的账号在 `state.json` 缺失时**静默消失**
-    //（凭据还在 `.credentials.yaml` 里，只是索引建不出来，用户只能重新登录）。
+    // ⚠️ 腾讯 Marvis（2026-11-09）：漏加 = `MARVIS_ACCOUNT_*` 的账号在
+    // `state.json` 缺失时**静默消失**（凭据还在 `.credentials.yaml` 里，
+    // 只是索引建不出来，用户只能重新登录）。
     ['MARVIS', 'marvis'],
-    // ⚠️ 超级麦吉（Magicrew，2026-10-29）—— 同款坑第 **八** 次。
-    // 漏加 = `MAGICREW_ACCOUNT_*` 的账号在 `state.json` 缺失时**静默消失**
-    //（凭据还在 `.credentials.yaml` 里，只是索引建不出来，用户只能重新导入）。
-    ['MAGICREW', 'magicrew'],
-    // ⚠️ MagiCrew 国际站（`magicrewintl`，2026-11-01）—— 同款坑第 **九** 次。
-    // 漏加 = `MAGICREWINTL_ACCOUNT_*` 的账号在 `state.json` 缺失时**静默消失**
-    //（凭据还在 `.credentials.yaml` 里，只是索引建不出来，用户只能重新导入）。
-    // ⚠️ 与 `MAGICREW` 是**超串关系**（`MAGICREWINTL` 以 `MAGICREW` 开头）——
-    //    顺序由 `ACCOUNT_REF_RE` 内部的**长度降序排序**保证，与本数组书写顺序无关
-    //    （与 `MINIMAX` / `MINIMAXINTL`、`AUTOCLAW` / `AUTOCLAWINTL` 同型）。
-    ['MAGICREWINTL', 'magicrewintl'],
-    // ⚠️ 第 19 个 provider（autoclawintl，2026-10-20）—— 同款坑第 **七** 次。
-    // 漏加 = `AUTOCLAWINTL_ACCOUNT_*` 的账号在 `state.json` 缺失时**静默消失**
-    //（凭据还在 `.credentials.yaml` 里，只是索引建不出来，用户只能重新导入）。
-    // ⚠️ 与 `AUTOCLAW` 是**超串关系**（`AUTOCLAWINTL` 以 `AUTOCLAW` 开头）——
-    //    顺序由 `ACCOUNT_REF_RE` 内部的**长度降序排序**保证，与本数组书写顺序无关
-    //    （与 `MINIMAX` / `MINIMAXINTL` 同型）。
-    ['AUTOCLAWINTL', 'autoclawintl'],
 ];
 /**
  * 账号凭据 ref 形态：`{PREFIX}_ACCOUNT_{SUFFIX}`（前缀由单一真相源派生）。
@@ -1238,9 +1118,9 @@ function accountFromCredentialRef(ref) {
          * 其余 provider 保持 `true`（绝大多数确有 refresh 端点）；将来新增
          * 「静态材料」渠道时要把 id 一并加进来 —— 这是一张**只增不改**的例外表。
          */
-        refreshable: provider !== 'monkeycode'
-            && provider !== 'monkeycodeintl'
-            && provider !== 'baizhi',
+        // ⚠️ 原版在此排除静态 Key 渠道（MonkeyCode 两站 / 百智云）；本 fork 只剩
+        //    marvis（OAuth 型凭据，确有 refresh 端点）⇒ 恢复路径恒为可续期。
+        refreshable: true,
     };
 }
 /** 文件后端：`$DSH_HOME/jet-hub/state.json`（原子写）。 */

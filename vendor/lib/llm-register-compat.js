@@ -71,7 +71,6 @@
  * `settings-compat.ts` 中（当前无调用方）。
  */
 import { withDeadModelPruning } from './dead-model-store.js';
-import { withAnalyzeImageScoping } from './codearts-vision.js';
 /** dsh-llm 对「configurable provider 已存在」抛的 code。**当前仅作防御**保留。 */
 const DUPLICATE_DIRECTORY = 'DUPLICATE_DIRECTORY';
 /**
@@ -383,11 +382,9 @@ export function registerAdapterIdempotent(llm, providers, adapter, warn, pruning
     //    于是 this.stream 命中记账陷阱；反过来则 this 落到裸适配器、记账被绕过。
     let target = wrapAdapterWithTokenLedger(providers, adapter);
     if (typeof adapter === 'object' && adapter !== null) {
-        // ⚠️ **最外层**：作用域摘除要在记账与失效剔除**之外** —— 它改的是 `options`
-        //    （工具表），而内两层改的是 `this`/返回值；放最外层时 options 先被摘干净，
-        //    内层拿到的就是已摘好的工具表。⚠️ 顺序反过来也能工作（内层只是透传），
-        //    但那样内层的记账/剔除会先看到未摘的表，日志里更难看出真实上送了哪些工具。
-        target = withAnalyzeImageScoping(providers, target);
+        // ⚠️ 本 fork 裁剪：原版此处还有一层 `withAnalyzeImageScoping`（把 analyzeImage
+        //    工具从非识图路由的工具表里摘掉）。analyzeImage 工具本身依赖 codearts
+        //    视觉模型、已随裁剪整体移除 ⇒ 没有工具可摘，包装层一并删除。
         try {
             // ⚠️ `pruning.enabled === false` 时**完全不参与**失效模型机制
             //（不记录、**也不过滤**）—— 聚合 provider 必须这样。理由见

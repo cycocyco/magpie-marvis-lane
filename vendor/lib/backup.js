@@ -1,6 +1,5 @@
 import { credentialRef } from '@deepseek-ai/dsh-credentials';
 import { providerOfAccountRef, sanitizeAccounts, sanitizePermanentLocks } from './jet-hub-store.js';
-import { OPENCODE } from './opencode-product.js';
 import { BACKUP_FORMAT, BACKUP_VERSION } from './types.js';
 /** 备份文件格式校验失败。 */
 export class BackupFormatError extends Error {
@@ -71,7 +70,9 @@ const IDENTITY_FIELDS = ['user_id', 'uid', 'userid', 'account_id', 'access_key_i
  * 跨来源不可靠，而身份字段是账号在服务端的真实标识（候选表见
  * {@link IDENTITY_FIELDS}）。
  *
- * ⚠️ **`opencode` 必须单独处理**（见下），它没有上表里任何一个字段。
+ * ⚠️ **`opencode` 原版必须单独处理**（它没有上表里任何一个字段）——
+ *  随 opencode 车道裁剪，该分支已移除；marvis 凭据（access/refresh/openid/guid）
+ *  走上表的 `sub` / `user_id` 通配。
  */
 function identityKey(provider, rawCredential) {
     if (typeof rawCredential !== 'string' || rawCredential.length === 0)
@@ -82,22 +83,6 @@ function identityKey(provider, rawCredential) {
             const value = parsed[key];
             if (typeof value === 'string' && value.length > 0)
                 return `${provider}:${value}`;
-        }
-        // opencode 的凭据只有 `api_key`（`{api_key, nickname}`），没有上表里的任何字段，
-        // 故单独认它，并单独加 `key:` 命名空间以免与上面那类值撞键。
-        //
-        // ⚠️ **匿名槽必须排除**：匿名通道的 api_key 恒为 `OPENCODE.anonymousKey`
-        // （字面量 `public`，见 `src/opencode-auth.ts` 的 `listIdentitySlots` 注释）——
-        // 全部匿名槽共用同一个值，拿它当身份会把「用户刻意加的多条匿名通道」判成
-        // 同一账号而**拒绝导入**（上游明确把「多条匿名槽各走各的出口」当能力提供）。
-        // 排除后匿名槽退回纯 `id` 判重 —— 它们本就无法互相区分，这是唯一正确口径。
-        if (provider === OPENCODE.id) {
-            const apiKey = parsed.api_key;
-            if (typeof apiKey === 'string'
-                && apiKey.length > 0
-                && apiKey !== OPENCODE.anonymousKey) {
-                return `${provider}:key:${apiKey}`;
-            }
         }
     }
     catch {

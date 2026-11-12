@@ -27,7 +27,7 @@
  * —— 那是本仓库反复记录过的缺陷形态。
  */
 import { TtlCache } from './ttl-cache.js';
-import { badgePlanFor, badgePlanSelectorFor } from './badge-subscription.js';
+
 /** 徽标读数的缓存时长（毫秒）；`DSH_JET_HUB_BADGE_TTL_MS` 可覆盖。 */
 export const DSH_JET_HUB_BADGE_TTL_MS = 'DSH_JET_HUB_BADGE_TTL_MS';
 /**
@@ -123,53 +123,10 @@ export function createUsageBadge(deps) {
             disabledCount: pool.length - enabledIds.length,
             ...balances.value.windowDays === undefined ? {} : { windowDays: balances.value.windowDays },
         };
-        // ⚠️ `subscriptionOf` 的第二个参数是 `ReadonlySet`（它按 id 判「这条余额行
-        //    属不属于启用账号」）—— 上面为了传 `accountIds` 用的是数组，这里再包一次。
-        const subscription = await subscriptionOf(provider, new Set(enabledIds), accounts);
-        if (subscription !== undefined)
-            snapshot.subscription = subscription;
+        // ⚠️ 本 fork 裁剪：原版此处还会拼一份「订阅读数」（Cline 的窗口 /
+        // Qoder 的套餐包，判定表在 badge-subscription.js）。两类数据源都随
+        // 被删渠道移除，marvis 无订阅概念 ⇒ 订阅域整体摘除，snapshot 恒无该键。
         return snapshot;
-    }
-    /**
-     * 订阅读数：先试**窗口**（Cline 的 5 小时 / 周 / 月），再试**套餐包**。
-     *
-     * ⚠️ 订阅查询失败**只让订阅缺席**，绝不连坐余额 —— 余额与订阅是两个独立的上游
-     * 端点，把两者绑死会让「网关的额度接口挂了」显示成「这个渠道查不到余额」。
-     *
-     * @param accounts - **本次刚取回**的余额行（已过滤为启用账号）：套餐折算直接
-     *   用它，不额外发请求，也不引入任何跨次缓存。
-     */
-    async function subscriptionOf(provider, enabledIds, accounts) {
-        if (deps.collectQuota !== undefined) {
-            try {
-                const quota = await deps.collectQuota(provider);
-                if (quota !== undefined) {
-                    if (!quota.ok) {
-                        deps.warn?.(`[jet-hub] 用量徽标：${provider} 的订阅窗口读取失败（不影响余额）：${quota.error.message}`);
-                        return undefined;
-                    }
-                    return {
-                        kind: 'windows',
-                        // 与余额同一口径：只列启用账号（订阅接口自己的账号列表含停用账号）。
-                        accounts: quota.value.accounts.filter((row) => enabledIds.has(row.accountId)),
-                    };
-                }
-            }
-            catch (error) {
-                deps.warn?.(`[jet-hub] 用量徽标：${provider} 的订阅窗口读取抛错（不影响余额）：${String(error)}`);
-                return undefined;
-            }
-        }
-        if (badgePlanSelectorFor(provider) === undefined)
-            return undefined;
-        // 这里只做「折算」，判定表在 `badge-subscription.ts`：本模块不认识任何具体渠道。
-        const rows = accounts.map((row) => ({
-            accountId: row.accountId,
-            nickname: row.nickname,
-            plan: badgePlanFor(provider, row.balance),
-            ...row.error === undefined ? {} : { error: row.error },
-        }));
-        return rows.some((row) => row.plan !== null) ? { kind: 'plan', accounts: rows } : undefined;
     }
     return {
         async read(provider, options = {}) {
