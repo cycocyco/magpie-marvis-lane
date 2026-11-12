@@ -9,8 +9,8 @@
 //  3. 写入路径必须落回 .credentials.yaml —— 否则 refresh 出的新 token 只活在内存里，
 //     下次启动就退回旧 token，refresh_token 被消耗后彻底登不上。
 import { Service } from '@deepseek-ai/cordis'
-import { readFileSync, writeFileSync, copyFileSync, existsSync, renameSync, rmSync, statSync } from 'node:fs'
-import { join } from 'node:path'
+import { readFileSync, writeFileSync, copyFileSync, existsSync, renameSync, rmSync, statSync, mkdirSync } from 'node:fs'
+import { join, dirname } from 'node:path'
 import { homedir } from 'node:os'
 
 export const CRED_BASENAME = '.credentials.yaml'
@@ -913,6 +913,15 @@ export class FileCredentialProvider extends Service {
   _load() {
     const stamp = stampOf(this.file)
     if (this._refs !== undefined && (stamp === undefined || stamp === this._stamp)) return
+    // ⚠️ 文件不存在是**正常态**（全新插件家目录、或崩溃时正在原子替换而目标丢了）。
+    // 2026-11-12 事故：崩溃时正写到一半，`.credentials.yaml` 整个消失，此后每次
+    // 登录都在 `set()` 里读到 ENOENT ⇒ 异常被上层吞掉 ⇒ 界面永远「等待登录」。
+    if (!existsSync(this.file)) {
+      this._raw = ''
+      this._refs = new Map()
+      this._stamp = undefined
+      return
+    }
     this._raw = readFileSync(this.file, 'utf8')
     this._refs = parseRefs(this._raw)
     this._stamp = stamp
@@ -954,12 +963,16 @@ export class FileCredentialProvider extends Service {
     this._load()
     // 整段读-改-写排进串行链：并发 set 不再各自拿旧快照覆盖对方（见 serializeWrite 注释）。
     await serializeWrite(this.file, async () => {
-      const raw = readFileSync(this.file, 'utf8')
+      // ⚠️ 文件不存在 ⇒ 从最小合法文档起步（`upsertRefsInto` 要求有 `refs:` 段；
+      // 全新家目录 / 崩溃丢文件都是正常态，见 `_load` 的事故注释）。
+      const raw = existsSync(this.file) ? readFileSync(this.file, 'utf8') : 'refs:\n'
       const next = upsertRefsInto(raw, new Map([[name, String(value)]]))
       // ⚠️ `.bak` 只是装饰（全仓库只写不读），不能因为备份失败就拒绝写凭据
       // —— 只读文件/被杀软占住时 `copyFileSync` 会抛 EPERM，凭据就白丢了。
       try { if (existsSync(this.file)) copyFileSync(this.file, `${this.file}.bak`) } catch { /* 尽力而为 */ }
       // tmp 名字带自增序号：同一进程里两个并发 set（两家 provider 同时续期）不会撞同一个临时文件
+      // 目录不存在时先建（全新家目录，见 `_load` 事故注释）；存在则幂等 no-op。
+      mkdirSync(dirname(this.file), { recursive: true })
       const tmp = `${this.file}.tmp-${process.pid}-${(writeSeq += 1)}`
       writeFileSync(tmp, next, 'utf8')
       // ⚠️ 戳必须在替换**之前**从 `tmp` 上取（2026-11-03 一审实跑揪出来的真缺陷）：
@@ -1001,6 +1014,7 @@ export class FileCredentialProvider extends Service {
     // （文本扫，只看键不看值）而不是 parseRefs —— 后者的职责是解值，解不出会跳过那条，
     // 「跳过」在这里会被当成「不存在」，于是 unset 变成什么都不做。
     await serializeWrite(this.file, async () => {
+      if (!existsSync(this.file)) return // 没有文件 ⇒ 没有可删的 ref（见 `_load` 事故注释）
       const raw = readFileSync(this.file, 'utf8')
       if (!scanRefKeys(raw).has(name)) return
       // 整条删掉，不写空值（见 deleteRefsFrom 的说明）。

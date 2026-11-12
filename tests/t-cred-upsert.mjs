@@ -20,7 +20,7 @@
 //   ⑥ 块标量 ref 必须整块替换；只换首行会留下孤儿续行，本体同样拒绝整份文件。
 
 import { FileCredentialProvider, parseRefs, scanRefKeys } from '../src/credentials.mjs'
-import { chmodSync, copyFileSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -90,6 +90,23 @@ const FIXTURE = [
 writeFileSync(file, FIXTURE, 'utf8')
 
 const p = new FileCredentialProvider(fakeCtx, { file })
+
+// ⓪ 文件根本不存在时也要能首次写入（2026-11-12 事故回归）：
+//    崩溃正好落在原子替换的窗口里会让 `.credentials.yaml` 整个消失，
+//    此后 `set()` 读到 ENOENT ⇒ 异常被上层吞掉 ⇒ 界面永远「等待登录」。
+{
+  const missingDir = mkdtempSync(join(tmpdir(), 'cred-missing-'))
+  const missingFile = join(missingDir, 'nested', '.credentials.yaml') // 连父目录都不存在
+  const pm = new FileCredentialProvider(fakeCtx, { file: missingFile })
+  ok((await pm.resolve('ANY_REF')) === undefined, '⓪ 文件不存在时 resolve 返回 undefined（不抛）')
+  await pm.set('MARVIS_ACCOUNT_FIRST1', '{"access_token":"t1"}')
+  ok(existsSync(missingFile), '⓪ 文件不存在时 set 能创建文件（含父目录）')
+  ok((await pm.resolve('MARVIS_ACCOUNT_FIRST1'))?.value === '{"access_token":"t1"}', '⓪ 写进去的值能读回')
+  await pm.unset('MARVIS_ACCOUNT_FIRST1')
+  ok((await pm.resolve('MARVIS_ACCOUNT_FIRST1')) === undefined, '⓪ unset 能删掉刚写的 ref')
+  rmSync(missingDir, { recursive: true, force: true })
+}
+
 
 // ① 全新 ref
 await p.set('MAGICREW_ACCOUNT_TEST0001', '{"jwt":"abc"}')
