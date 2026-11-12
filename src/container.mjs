@@ -17,7 +17,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { Context } from '@deepseek-ai/cordis'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
-import { readFileSync } from 'node:fs'
+import { readFileSync, mkdirSync, existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { FileCredentialProvider, CRED_BASENAME, parseRefs, scanRefKeys } from './credentials.mjs'
 import { ConnectionSeam } from './connection.mjs'
@@ -94,10 +94,11 @@ export class JetHubContainer {
   constructor(options = {}) {
     // ⚠️ 两个路径语义**不同**（2026-10-27 实测，卡住一轮）：
     //  - `this.home` 给**自己的** FileCredentialProvider 用，是**家目录**
-    //    （本机是 `%USERPROFILE%` / `$HOME`），它内部拼 `<家>/.dsh/.credentials.yaml`。
+    //    （默认是 magpie 自持的 `~/.config/magpie/jet-hub-marvis`，见
+    //    plugin.mjs `resolveHome`），它内部拼 `<家>/.dsh/.credentials.yaml`。
     //  - `this.dshHome` 给**本体**用（`process.env.DSH_HOME`），本体直接读
     //    `${DSH_HOME}/.credentials.yaml`（**不拼 `.dsh`**），所以必须是
-    //    `<家>/.dsh`（本机即 `%USERPROFILE%\.dsh`）。
+    //    `<家>/.dsh`。
     // 传错的表现：本体报「未配置凭据，请先登录」而 credentials 服务 resolve 正常。
     this.home = options.home
     this.dshHome = options.dshHome ?? (() => {
@@ -231,6 +232,15 @@ export class JetHubContainer {
   }
 
   async _start() {
+    // ⚠️ 落盘目录先备好再放引擎进来：本体的各 store 都是 recursive mkdir
+    // 建目录，而 Bun 的 fs 对「路径链上有异常成分」的 recursive mkdir 会误报
+    // ENOENT（2026-11-12 magpie 登录 ENOENT 事故：当时 `~/.dsh` 处于坏状态，
+    // Node 同路径正常、Bun 报 ENOENT）。这里先把 `dshHome` 与其下的
+    // `jet-hub/` 逐级建出来，引擎后续的 recursive mkdir 就只剩
+    // 「目标已存在 → 幂等 no-op」这一条最稳的路径。
+    for (const dir of [this.dshHome, join(this.dshHome, 'jet-hub')])
+      if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+
     // 本体网关读这些环境变量。必须在 import 本体之前设好。
     process.env.DSH_HOME = this.dshHome
     // ⚠️ 显式**关掉**本体自带的 HTTP 网关：本插件直接调 `ctx.llm`

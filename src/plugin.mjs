@@ -126,10 +126,19 @@ const FALLBACK_MODELS = {
   'marvis/main-auto': { name: 'Marvis · Auto' },
 }
 
-/** DSH 家目录（凭据所在处）。可用插件 options 的 `home` 覆盖。 */
+/**
+ * 引擎家目录（凭据/账号池落盘处）。可用插件 options 的 `home` 覆盖。
+ *
+ * ⚠️ 默认值是**插件自持目录**（`~/.config/magpie/jet-hub-marvis`），不是
+ * `~`（用户主目录）：干净插件不该默认写宿主 DSH 的 `~/.dsh` —— 那是 DSH
+ * 安装的地盘（本机还被 junction 指去了 W 盘）。引擎的落盘约定是
+ * `<家>/.dsh/…`（见 container.mjs 构造器注释），把「家」安在 magpie 自己的
+ * 配置区，与 `jet-hub-models.json` 缓存同址。想桥接已有 DSH 凭据的用户
+ * 显式传 `home` 指到**含 `.dsh` 的目录**即可。
+ */
 function resolveHome(optionHome) {
   if (typeof optionHome === 'string' && optionHome !== '') return optionHome
-  return homedir()
+  return join(homedir(), '.config', 'magpie', 'jet-hub-marvis')
 }
 
 /** 本体入口：优先用插件自带副本，其次退回 DSH 安装目录里的那份。 */
