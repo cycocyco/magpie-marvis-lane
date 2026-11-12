@@ -120,9 +120,9 @@ export declare function windowsRegisteredBrowserPaths(query?: (key: string) => {
  * 两个解码器**都能解任何字节序列**（`fatal: false`）⇒ 「先试 gb18030」在
  * **英文 Windows**（代码页 1252）上会把 1252 的字节解成**别的字符**：
  * ```
- * 路径 C:\Users\José\Chrome
- *   gb18030    ⇒ "C:\Users\Jos閈\Chrome"   ← 错了
- *   windows-1252 ⇒ "C:\Users\José\Chrome"  ✅
+ * 路径 C:\Users\example\Chrome
+ *   gb18030    ⇒ "C:\Users\??????\Chrome"   ← 错了
+ *   windows-1252 ⇒ "C:\Users\example\Chrome"  ✅
  * ```
  * ⇒ 在英文系统上，路径被解错 ⇒ **存在性过滤把它筛掉** ⇒ 整条注册表腿
  * **静默失效**（比「解成 U+FFFD」更难发现，因为它至少还是有效文本）。

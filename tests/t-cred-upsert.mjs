@@ -560,7 +560,7 @@ for (const [label, top, topKey] of [['数字尾 x1', 'x1', 'x1'], ['中划线 x-
 // ── ⑲ 折行标量必须吃掉续行前导缩进 ──────────────────────────────────────
 // 2026-10-31 二审实测真缺陷：`parseRefs` 折行时把续行**原样**压入、只补一个空格，
 // 而 YAML 折叠规则要求吃掉续行的前导缩进。真实凭据文件里 24/62 条值因此多出
-// 「\ + 5 个空格」，其中 LOOMY_ACCOUNT_D54BD0DF 的 JSON 直接解析失败
+// 「\ + 5 个空格」，其中 `SOME_ACCOUNT_<ID>` 的 JSON 直接解析失败
 // （消费方 20+ 处 parseCredential 返回 undefined ⇒ 该账号续期永久失效）。
 // 更糟的是「resolve → set 回去」会把脏值落盘、静默损坏原值，而 yaml 语法仍合法。
 {
@@ -574,8 +574,8 @@ for (const [label, top, topKey] of [['数字尾 x1', 'x1', 'x1'], ['中划线 x-
     ok(truth === value, `⑲ ${label}：夹具往返无损（本体读回的就是原值）`)
     ok(parseRefs(text).get('K') === truth, `⑲ ${label}：parseRefs 与本体一致（实际 ${JSON.stringify(parseRefs(text).get('K')).slice(0, 80)}）`)
   }
-  roundtrip('长 JSON 折行', JSON.stringify({ access_token: 'x'.repeat(80), nickname: 'Spring', expires_at: '1791609154261' }))
-  roundtrip('中文值折行', JSON.stringify({ access_token: 'y'.repeat(60), nickname: '张三', userid: '260926131233458672' }))
+  roundtrip('长 JSON 折行', JSON.stringify({ access_token: 'x'.repeat(80), nickname: 'SampleNick', expires_at: '1791609154261' }))
+  roundtrip('中文值折行', JSON.stringify({ access_token: 'y'.repeat(60), nickname: '示例昵称', userid: '100000000000000001' }))
   roundtrip('含换行的值', 'line1\nline2\nline3')
 
   // 手写跨行单引号标量：缩进必须被吃掉

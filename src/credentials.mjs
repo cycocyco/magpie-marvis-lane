@@ -526,7 +526,7 @@ export function parseRefs(text) {
     }
     // YAML 折行（2026-10-31 二审实测真缺陷）：续行的**前导缩进必须吃掉**。
     // 原来 `parts.push(cur)` 原样压入、`join(' ')` 只补一个空格 ⇒ 真实凭据文件里
-    // 24/62 条值多出「\ + 5 个空格」，其中 LOOMY_ACCOUNT_D54BD0DF 的 JSON 直接
+    // 24/62 条值多出「\ + 5 个空格」，其中 `SOME_ACCOUNT_<ID>` 的 JSON 直接
     // 解析失败（消费方 vendor/lib/accio-auth.js 等 20+ 处 parseCredential 都返回
     // undefined ⇒ 该账号续期永久失效）。更糟的是「resolve → set 回去」会把脏值
     // 落盘，原本完好的凭据被静默损坏，而 yaml 语法仍然合法、校验看不出来。
@@ -636,8 +636,8 @@ export function writeRefsInto(text, changed) {
       // ⚠️ j 必须从 i 起算，不能从 i+1 起算（2026-10-28 实测真缺陷）：
       // 值在**首行就闭合**时（绝大多数 ref 都是单行），closed 一开始就是 true，
       // j 保持 i+1，收尾 `i = j + 1` 就变成 i+2 —— 把紧随其后的那个 ref 整段吞掉。
-      // 实际踩过：改 CODEARTS_ACCOUNT_92D5F562 时吃掉了下一行的
-      // WORKBUDDY_ACCOUNT_6EF844A1，refs 从 47 掉到 46。
+      // 实际踩过：改 `PROVIDER_ACCOUNT_AAAAAAAA` 时吃掉了下一行的
+      // `OTHER_ACCOUNT_BBBBBBBB`，refs 从 47 掉到 46。
       let j = i
       let closed = isClose(m[2].slice(1))
       while (!closed && j + 1 < lines.length) {
